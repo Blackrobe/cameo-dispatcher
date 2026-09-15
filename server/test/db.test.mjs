@@ -476,3 +476,21 @@ test("an owner can target the one PR referenced by a delivered task even without
   assert.equal(action.headBranch, null);
   assert.equal(action.state, "queued");
 }));
+
+test("a trusted slash merge needs only the fixed-repository PR number", () => withStore(store => {
+  const action = store.createGithubAction({
+    interactionId: "1549800000000000001",
+    requesterDiscordId: "12345",
+    requesterName: "Aedis",
+    action: "merge",
+    authorizationKind: "trusted_slash",
+    repository: "cameo-mod/Cameo-mod",
+    prNumber: 400,
+    mergeMethod: "merge",
+    discordThreadId: "1549800000000000999"
+  });
+  assert.equal(action.prNumber, 400);
+  assert.equal(action.authorizationKind, "trusted_slash");
+  assert.equal(action.expectedHeadSha, null);
+  assert.equal(action.state, "queued");
+}));

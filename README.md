@@ -45,7 +45,7 @@ Conversational intake uses an immutable bot mention rather than a conventional p
 
 The mention must be the first raw item in the message. Leading text, quotes, code blocks, lookalike Unicode text, edited historical messages, bot/webhook messages, other guilds, other channels, and every non-allowlisted user are ignored. Only Blackrobe and Aedis are admitted. The source guild, channel, message, and immutable author IDs are retained with the accepted task snapshot; source edits or deletion do not revise or cancel it.
 
-Message Content remains disabled. The bot requests only the standard Guild Messages intent and relies on Discord's mentioned-message exception. discord.js message caching is set to zero. Attachments are rejected without download for this milestone.
+The current deployment has Discord's privileged Message Content intent disabled. Although Discord documents an exception for mentioned messages, live thread evidence showed content can still arrive redacted, so natural-language intake is not considered reliable until the intent is enabled in the Developer Portal and requested by the client. Slash commands and button interactions remain available without it. discord.js message caching is set to zero. Attachments are rejected without download for this milestone.
 
 Conversational jobs receive owner-controlled acceptance policy, use the Discord message ID for durable deduplication, and are capped at two outstanding jobs per user, five globally, and three submissions per user per ten minutes. Repeated rejection notices are suppressed for one minute.
 
@@ -54,7 +54,8 @@ Controls remain unambiguous slash commands:
 - `/cameo-task` — structured task with explicit acceptance criteria and owner-only model, effort, and execution-mode overrides;
 - `/cameo-status` and `/cameo-cancel` — state and requester-owned queued cancellation;
 - `/cameo-model` — Blackrobe-only one-shot model and effort selection for the next follow-up in the current registered thread;
-- `/cameo-github open|merge|close` — trusted-developer upstream PR control with exact branch or PR/head identity;
+- `/cameo-github merge pr:<number>` and `close pr:<number>` — trusted-developer controls; the controller resolves and pins the live identity internally;
+- `/cameo-github open` — open a PR between exact existing upstream head/base branches;
 - `/cameo-worker` — worker and pause availability;
 - `/cameo-pause` and `/cameo-resume` — Blackrobe-only claim control.
 
@@ -66,7 +67,7 @@ New tasks default to the draft-PR lane. Ordinary work routes to GPT-5.6 Sol at h
 
 Agents receive authenticated read-only snapshots for referenced pull requests in `cameo-mod/Cameo-mod`; GitHub credentials remain controller-only. They may use `gh pr view <number>`, `gh pr diff <number>`, `gh pr checks <number>`, and `gh issue view <number>` against an immutable cache refreshed before each run and reviewer. The shim labels the cache timestamp in the environment, rejects missing references, unsupported flags, other commands, and repository overrides, and never contacts GitHub itself. `gh api`, authentication commands, comments, reviews, PR creation, merge, and all other writes remain unavailable to the model.
 
-Trusted-developer GitHub control is separate from model authority. Natural task-thread language never mutates GitHub directly. If a message contains one possible `merge` or `close` action and one task PR target, the server fetches and displays the live PR head/base identity with a non-executing Discord action button while the ordinary agent analysis continues. Questions, explanations, negation, unusual phrasing, and classifier mistakes can therefore create at most an unwanted proposal. Only a button click from Blackrobe or Aedis consumes the signed, 15-minute proposal and queues the exact displayed PR/head; a moved head is rejected. `/cameo-github` remains the explicit one-step path and can open an upstream branch-to-branch PR, merge an exact-head PR, or close one. Merge uses GitHub protections and never supplies admin bypass, auto-merge, force-push, branch deletion, or comments. Direct hosted web search stays disabled in coding sessions because resumed sessions may already contain private local context.
+Trusted-developer GitHub control is separate from model authority. Natural task-thread language never mutates GitHub directly. When Message Content is available, a possible `merge` or `close` target produces a non-executing proposal button bound to the displayed PR identity. Only a button click from Blackrobe or Aedis consumes the signed, 15-minute proposal; a moved identity is rejected. `/cameo-github merge` and `close` are the explicit one-step paths and require only a PR number because the Windows controller double-reads and journals the live SHA, owner, head branch, and base branch under the shared lock before mutation. Merge uses GitHub protections and never supplies admin bypass, auto-merge, force-push, branch deletion, or comments. Direct hosted web search stays disabled in coding sessions because resumed sessions may already contain private local context.
 
 ## Local runner
 

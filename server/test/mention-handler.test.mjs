@@ -73,7 +73,8 @@ function fakeMessage({
   threadParentId = channelId,
   existingThread = false,
   replyError = null,
-  threadSendError = null
+  threadSendError = null,
+  botRoleMention = false
 } = {}) {
   const replies = [];
   const threadMessages = [];
@@ -110,6 +111,14 @@ function fakeMessage({
     editedTimestamp,
     messageSnapshots: { size: snapshotCount },
     attachments: { size: attachmentCount },
+    mentions: {
+      roles: {
+        find(callback) {
+          const role = { id: "1549095647293079553", tags: { botId } };
+          return botRoleMention && callback(role) ? role : undefined;
+        }
+      }
+    },
     channel: {
       parentId: threadParentId,
       isThread() {
@@ -186,6 +195,28 @@ test("valid Blackrobe and Aedis mentions create one sourced job each with owner 
     assert.ok(first.discordAcknowledgementId);
     assert.equal(blackrobe.threadMessages.length, 1);
     assert.equal(blackrobe.threadMessages[0].embeds[0].data.title, "Worker offline; task queued");
+  } finally {
+    fixture.close();
+  }
+});
+
+test("a redacted integration-role mention gets visible slash guidance instead of silence", async () => {
+  const fixture = createFixture();
+  try {
+    const redacted = fakeMessage({ content: "", botRoleMention: true });
+    await fixture.handler(redacted);
+    assert.match(redacted.replies[0].content, /redacted/);
+    assert.match(redacted.replies[0].content, /cameo-github merge/);
+    assert.equal(fixture.store.db.prepare("SELECT count(*) count FROM jobs").get().count, 0);
+
+    fixture.store.db.exec("DELETE FROM rate_limit_notices");
+    const roleMention = fakeMessage({
+      id: "1549200000000000002",
+      content: "<@&1549095647293079553> inspect active YAML",
+      botRoleMention: true
+    });
+    await fixture.handler(roleMention);
+    assert.ok(fixture.store.getByRequestId(`discord-message-${roleMention.id}`));
   } finally {
     fixture.close();
   }
@@ -357,6 +388,11 @@ test("existing slash commands remain registered", () => {
   const names = commands.map(command => command.name);
   for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-model", "cameo-github", "cameo-pause", "cameo-resume"])
     assert.ok(names.includes(name));
+  const github = commands.find(command => command.name === "cameo-github");
+  const merge = github.options.find(option => option.name === "merge");
+  const close = github.options.find(option => option.name === "close");
+  assert.deepEqual(merge.options.map(option => option.name), ["pr", "method"]);
+  assert.deepEqual(close.options.map(option => option.name), ["pr"]);
 });
 
 test("GitHub proposals use a validated public PR identity", async () => {

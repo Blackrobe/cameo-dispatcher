@@ -91,6 +91,7 @@ function parseGithubAction(row) {
     requesterDiscordId: row.requester_discord_id,
     requesterName: row.requester_name,
     action: row.action,
+    authorizationKind: row.authorization_kind ?? "legacy",
     repository: row.repository,
     prNumber: row.pr_number,
     prUrl: row.pr_url,
@@ -237,6 +238,7 @@ export class JobStore {
         requester_discord_id TEXT NOT NULL,
         requester_name TEXT NOT NULL,
         action TEXT NOT NULL,
+        authorization_kind TEXT NOT NULL DEFAULT 'legacy',
         repository TEXT NOT NULL,
         pr_number INTEGER,
         pr_url TEXT,
@@ -305,6 +307,8 @@ export class JobStore {
       this.db.exec("ALTER TABLE github_actions ADD COLUMN head_owner TEXT");
     if (!actionColumns.has("proposal_identity_digest"))
       this.db.exec("ALTER TABLE github_actions ADD COLUMN proposal_identity_digest TEXT");
+    if (!actionColumns.has("authorization_kind"))
+      this.db.exec("ALTER TABLE github_actions ADD COLUMN authorization_kind TEXT NOT NULL DEFAULT 'legacy'");
   }
 
   createGithubAction(input) {
@@ -323,6 +327,9 @@ export class JobStore {
       return { ...existingInteraction, createDisposition: "existing" };
 
     let resolved = { ...input };
+    resolved.authorizationKind = input.authorizationKind ?? (input.rootJobId ? "task_control" : "trusted_exact");
+    if (!new Set(["task_button", "task_control", "trusted_slash", "trusted_exact"]).has(resolved.authorizationKind))
+      throw new Error("GitHub action authorization kind is invalid");
     if (input.rootJobId) {
       const target = this.resolveTaskPrTarget(input.rootJobId, input.requestedPrNumber);
       const proposalHead = input.proposalExpectedHeadSha ?? null;
@@ -370,9 +377,9 @@ export class JobStore {
       if (fullIdentity && (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(resolved.headOwner)
         || !branchNamePattern.test(resolved.headBranch) || !branchNamePattern.test(resolved.baseBranch)))
         throw new Error("GitHub action expected PR identity is invalid");
-      if (identitySupplied && !fullIdentity && !resolved.rootJobId)
+      if (identitySupplied && !fullIdentity && !resolved.rootJobId && resolved.authorizationKind !== "trusted_slash")
         throw new Error("Partial GitHub PR identity is allowed only for a trusted task proposal");
-      if (!identitySupplied && !resolved.rootJobId)
+      if (!identitySupplied && !resolved.rootJobId && resolved.authorizationKind !== "trusted_slash")
         throw new Error("Generic GitHub actions require an exact expected PR identity");
     }
     if (resolved.action === "merge" && !new Set(["merge", "squash", "rebase"]).has(resolved.mergeMethod ?? "merge"))
@@ -398,13 +405,13 @@ export class JobStore {
       this.db.prepare(`
         INSERT INTO github_actions (
           id, interaction_id, root_job_id, requester_discord_id, requester_name,
-          action, repository, pr_number, pr_url, expected_head_sha, proposal_identity_digest, head_owner, head_branch,
+          action, authorization_kind, repository, pr_number, pr_url, expected_head_sha, proposal_identity_digest, head_owner, head_branch,
           base_branch, title, draft, merge_method, state, discord_thread_id,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
       `).run(
         id, resolved.interactionId, resolved.rootJobId ?? null,
-        resolved.requesterDiscordId, resolved.requesterName.trim(), resolved.action,
+        resolved.requesterDiscordId, resolved.requesterName.trim(), resolved.action, resolved.authorizationKind,
         resolved.repository, resolved.prNumber ?? null, resolved.prUrl ?? null,
         resolved.expectedHeadSha ?? null, resolved.proposalIdentityDigest ?? null,
         resolved.headOwner ?? null, resolved.headBranch ?? null,

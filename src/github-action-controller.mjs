@@ -51,9 +51,9 @@ function assertAction(config, action) {
     const fullIdentity = [action.headOwner, action.headBranch, action.baseBranch].every(Boolean);
     if (supplied && !headShaPattern.test(action.expectedHeadSha ?? ""))
       throw new Error("expected pull request head SHA is invalid");
-    if (supplied && !fullIdentity && !action.rootJobId)
+    if (supplied && !fullIdentity && !action.rootJobId && action.authorizationKind !== "trusted_slash")
       throw new Error("partial pull request identity is allowed only for a trusted task proposal");
-    if (!supplied && !action.rootJobId)
+    if (!supplied && !action.rootJobId && action.authorizationKind !== "trusted_slash")
       throw new Error("unresolved pull request identity is allowed only for an owner task-thread action");
   }
 }

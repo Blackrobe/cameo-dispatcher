@@ -177,3 +177,22 @@ test("task-thread PR control resolves and pins live identity before mutation", (
     ...unresolved, proposalIdentityDigest: proposalDigest("release")
   }, { execute }), /identity changed after the displayed proposal/);
 });
+
+test("trusted slash authorization resolves full identity from only a PR number", () => {
+  const execute = () => response({
+    number: 400, url: "https://github.com/cameo-mod/Cameo-mod/pull/400",
+    state: "OPEN", isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+    reviewDecision: null, headRefName: "feature", headRefOid: head,
+    headRepositoryOwner: { login: "Blackrobe" }, baseRefName: "master",
+    mergedAt: null, mergeCommit: null, autoMergeRequest: null
+  });
+  const resolved = resolveGithubAction(config, {
+    id: "CGA-SLASH", action: "merge", authorizationKind: "trusted_slash",
+    repository: "cameo-mod/Cameo-mod", prNumber: 400,
+    expectedHeadSha: null, headOwner: null, headBranch: null, baseBranch: null,
+    mergeMethod: "merge"
+  }, { execute });
+  assert.equal(resolved.expectedHeadSha, head);
+  assert.equal(resolved.headOwner, "Blackrobe");
+  assert.equal(resolved.baseBranch, "master");
+});

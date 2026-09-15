@@ -99,12 +99,8 @@ export const commands = [
       .addBooleanOption(option => option.setName("draft").setDescription("Open as draft; defaults to yes")))
     .addSubcommand(subcommand => subcommand
       .setName("merge")
-      .setDescription("Merge an upstream PR only at an exact head commit")
+      .setDescription("Merge an upstream PR; the controller resolves and pins its current identity")
       .addIntegerOption(option => option.setName("pr").setDescription("Upstream PR number").setRequired(true).setMinValue(1))
-      .addStringOption(option => option.setName("expected-head").setDescription("Exact 40-character PR head commit").setRequired(true).setMinLength(40).setMaxLength(40))
-      .addStringOption(option => option.setName("head-owner").setDescription("Expected PR head repository owner").setRequired(true).setMaxLength(40))
-      .addStringOption(option => option.setName("head-branch").setDescription("Expected PR head branch").setRequired(true).setMaxLength(200))
-      .addStringOption(option => option.setName("base-branch").setDescription("Expected upstream target branch").setRequired(true).setMaxLength(200))
       .addStringOption(option => option.setName("method").setDescription("GitHub merge method").addChoices(
         { name: "Merge commit", value: "merge" },
         { name: "Squash", value: "squash" },
@@ -113,11 +109,7 @@ export const commands = [
     .addSubcommand(subcommand => subcommand
       .setName("close")
       .setDescription("Close an upstream PR without deleting its branch")
-      .addIntegerOption(option => option.setName("pr").setDescription("Upstream PR number").setRequired(true).setMinValue(1))
-      .addStringOption(option => option.setName("expected-head").setDescription("Exact 40-character PR head commit").setRequired(true).setMinLength(40).setMaxLength(40))
-      .addStringOption(option => option.setName("head-owner").setDescription("Expected PR head repository owner").setRequired(true).setMaxLength(40))
-      .addStringOption(option => option.setName("head-branch").setDescription("Expected PR head branch").setRequired(true).setMaxLength(200))
-      .addStringOption(option => option.setName("base-branch").setDescription("Expected upstream target branch").setRequired(true).setMaxLength(200))),
+      .addIntegerOption(option => option.setName("pr").setDescription("Upstream PR number").setRequired(true).setMinValue(1))),
   new SlashCommandBuilder()
     .setName("cameo-pause")
     .setDescription("Owner only: pause new worker claims"),
@@ -311,6 +303,7 @@ export function acceptGithubProposal(config, store, actor, proposal) {
     requesterDiscordId: actor.id,
     requesterName: actor.globalName || actor.username,
     action: proposal.action,
+    authorizationKind: "task_button",
     repository: "cameo-mod/Cameo-mod",
     mergeMethod: "merge",
     discordThreadId: proposal.discordThreadId
@@ -432,7 +425,16 @@ export function createMentionHandler(config, store, client) {
       return;
 
     try {
-      const parsed = parseMentionIntake(message.content, client.user.id);
+      const botRole = message.mentions?.roles?.find?.(role => role.tags?.botId === client.user.id) ?? null;
+      if (!message.content && botRole) {
+        if (store.allowRateLimitNotice(message.author.id, 10))
+          await replyWithoutMentions(message, "Discord redacted this role-mentioned message. Use `/cameo-github merge pr:400` for the reliable structured action, or mention the Cameo Dispatcher app user after Message Content is enabled.");
+        return;
+      }
+      const intakeContent = botRole
+        ? message.content.replace(new RegExp(`^<@&${botRole.id}>`), `<@${client.user.id}>`)
+        : message.content;
+      const parsed = parseMentionIntake(intakeContent, client.user.id);
       if (!parsed)
         return;
 
@@ -767,10 +769,7 @@ export async function startDiscord(config, store) {
           : store.createGithubAction({
             ...common,
             prNumber: interaction.options.getInteger("pr", true),
-            expectedHeadSha: interaction.options.getString("expected-head", true),
-            headOwner: interaction.options.getString("head-owner", true),
-            headBranch: interaction.options.getString("head-branch", true),
-            baseBranch: interaction.options.getString("base-branch", true),
+            authorizationKind: "trusted_slash",
             mergeMethod: subcommand === "merge" ? interaction.options.getString("method") ?? "merge" : null
           });
         await interaction.reply({ embeds: [githubActionEmbed(action, "Trusted GitHub control queued")], ephemeral: true, allowedMentions: { parse: [] } });

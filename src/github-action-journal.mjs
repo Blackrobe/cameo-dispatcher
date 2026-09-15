@@ -30,6 +30,7 @@ export function githubActionIntent(action) {
     rootJobId: action.rootJobId ?? null,
     requesterDiscordId: action.requesterDiscordId,
     action: action.action,
+    authorizationKind: action.authorizationKind ?? "legacy",
     repository: action.repository,
     prNumber: action.prNumber ?? null,
     prUrl: action.prUrl ?? null,
