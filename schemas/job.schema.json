@@ -45,6 +45,12 @@
     "model": { "type": "string", "enum": ["gpt-5.6-sol", "gpt-6-astra"] },
     "reasoningEffort": { "type": "string", "enum": ["high", "max"] },
     "modelSource": { "type": "string", "minLength": 1, "maxLength": 50 },
+    "githubReferences": {
+      "type": "array",
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1, "maximum": 9999999 }
+    },
     "controllerContext": {
       "type": "array",
       "maxItems": 5,

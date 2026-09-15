@@ -46,8 +46,11 @@ function assertAction(config, action) {
   if (["close", "merge"].includes(action.action)) {
     if (!Number.isInteger(action.prNumber) || action.prNumber < 1 || action.prNumber > 9_999_999)
       throw new Error("pull request number is invalid");
-    if (!headShaPattern.test(action.expectedHeadSha ?? ""))
-      throw new Error("expected pull request head SHA is invalid");
+    const supplied = [action.expectedHeadSha, action.headOwner, action.headBranch, action.baseBranch].some(Boolean);
+    if (supplied && (!headShaPattern.test(action.expectedHeadSha ?? "") || !action.headOwner || !action.headBranch || !action.baseBranch))
+      throw new Error("expected pull request identity is incomplete or invalid");
+    if (!supplied && !action.rootJobId)
+      throw new Error("unresolved pull request identity is allowed only for an owner task-thread action");
   }
 }
 
@@ -68,6 +71,32 @@ function assertPrIdentity(pr, action) {
   if (pr.headRepositoryOwner?.login?.toLowerCase() !== action.headOwner?.toLowerCase()
     || pr.headRefName !== action.headBranch || pr.baseRefName !== action.baseBranch)
     throw new Error("pull request head repository, head branch, or base branch differs from the owner-authorized identity");
+}
+
+export function resolveGithubAction(config, action, dependencies = {}) {
+  assertAction(config, action);
+  if (action.action === "open")
+    return action;
+  const execute = dependencies.execute ?? spawnSync;
+  const observed = stablePr(config, action.prNumber, execute);
+  const supplied = [action.expectedHeadSha, action.headOwner, action.headBranch, action.baseBranch].some(Boolean);
+  if (supplied) {
+    assertPrIdentity(observed, action);
+    return action;
+  }
+  const resolved = {
+    ...action,
+    prUrl: observed.url,
+    expectedHeadSha: observed.headRefOid,
+    headOwner: observed.headRepositoryOwner?.login,
+    headBranch: observed.headRefName,
+    baseBranch: observed.baseRefName
+  };
+  if (!/^https:\/\/github\.com\/cameo-mod\/Cameo-mod\/pull\/\d+$/i.test(resolved.prUrl ?? "")
+    || !headShaPattern.test(resolved.expectedHeadSha ?? "") || !resolved.headOwner
+    || !branchPattern.test(resolved.headBranch ?? "") || !branchPattern.test(resolved.baseBranch ?? ""))
+    throw new Error("GitHub returned an invalid PR identity during owner-action resolution");
+  return resolved;
 }
 
 function executeClose(config, action, execute) {
@@ -169,6 +198,9 @@ function executeOpen(config, action, execute) {
 
 export function executeGithubAction(config, action, dependencies = {}) {
   assertAction(config, action);
+  if (["close", "merge"].includes(action.action)
+    && ![action.expectedHeadSha, action.headOwner, action.headBranch, action.baseBranch].every(Boolean))
+    throw new Error("GitHub action must be durably resolved before mutation");
   const execute = dependencies.execute ?? spawnSync;
   if (action.action === "close")
     return executeClose(config, action, execute);

@@ -444,3 +444,35 @@ test("an expired GitHub action accepts its retained late result without replay",
   assert.equal(recovered.state, "ready_for_review");
   assert.equal(recovered.result.summary, "Closed upstream PR #400.");
 }));
+
+test("an owner can target the one PR referenced by a delivered task even without publication provenance", () => withStore(store => {
+  let root = store.create({
+    requestId: "referenced-pr-root",
+    requesterDiscordId: "12345",
+    requesterName: "Blackrobe",
+    objective: "Inspect PR #400 and report its mergeability.",
+    acceptanceCriteria: ["Report findings."],
+    scope: []
+  });
+  root = store.setDiscordThread(root.id, "1549700000000000999");
+  store.claim("runner-1");
+  root = store.complete(root.id, "runner-1", "needs_attention", {
+    status: "needs_attention", summary: "GitHub cache was unavailable."
+  });
+  root = store.markDelivered(root.id, root.deliveryRevision, "result-message");
+  const action = store.createGithubAction({
+    interactionId: "1549700000000000001",
+    rootJobId: root.id,
+    requestedPrNumber: 400,
+    requesterDiscordId: "12345",
+    requesterName: "Blackrobe",
+    action: "merge",
+    repository: "cameo-mod/Cameo-mod",
+    mergeMethod: "merge",
+    discordThreadId: root.discordThreadId
+  });
+  assert.equal(action.prNumber, 400);
+  assert.equal(action.expectedHeadSha, null);
+  assert.equal(action.headBranch, null);
+  assert.equal(action.state, "queued");
+}));

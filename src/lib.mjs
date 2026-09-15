@@ -74,8 +74,13 @@ export function validateJob(input) {
     : input.controllerContext.map((value, index) => requireString(value, `controllerContext[${index}]`, 8000));
   if (controllerContext.length > 5)
     throw new Error("controllerContext must contain at most 5 snapshots");
+  const githubReferences = input.githubReferences === undefined ? [] : input.githubReferences.map(Number);
+  if (githubReferences.length > 3 || githubReferences.some(number => !Number.isInteger(number) || number < 1 || number > 9_999_999))
+    throw new Error("githubReferences must contain at most 3 numeric Cameo PR references");
+  if (new Set(githubReferences).size !== githubReferences.length)
+    throw new Error("githubReferences must be deduplicated");
 
-  return { requestId, requestedBy, objective, acceptanceCriteria, scope, executionMode, model, reasoningEffort, modelSource, controllerContext };
+  return { requestId, requestedBy, objective, acceptanceCriteria, scope, executionMode, model, reasoningEffort, modelSource, githubReferences, controllerContext };
 }
 
 export function validateFollowupJob(input) {

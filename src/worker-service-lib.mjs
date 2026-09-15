@@ -1,3 +1,5 @@
+import { extractReferencedPullRequests } from "./github-context.mjs";
+
 export function normalizeServerJob(job) {
   if (job === null || typeof job !== "object" || Array.isArray(job))
     throw new Error("dispatcher returned an invalid job");
@@ -24,6 +26,24 @@ export function normalizeServerJob(job) {
     normalized.resumeSessionId = job.resumeSessionId;
   }
   return normalized;
+}
+
+export function buildGithubDiscoveryReferences(job, rootJob = null, publication = null, maximum = 3) {
+  const references = extractReferencedPullRequests(job, maximum);
+  const add = number => {
+    if (Number.isInteger(number) && number > 0 && number <= 9_999_999 && !references.includes(number) && references.length < maximum)
+      references.push(number);
+  };
+  if (job.runKind === "followup" && publication?.state === "published") {
+    const match = String(publication.prUrl ?? "").match(/^https:\/\/github\.com\/cameo-mod\/Cameo-mod\/pull\/(\d+)$/i);
+    if (match)
+      add(Number(match[1]));
+  }
+  if (job.runKind === "followup" && rootJob?.requestId === job.rootRequestId && typeof rootJob.objective === "string") {
+    for (const number of extractReferencedPullRequests(rootJob, maximum))
+      add(number);
+  }
+  return references;
 }
 
 function boundedText(value, fallback, maxBytes) {

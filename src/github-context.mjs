@@ -67,7 +67,10 @@ function serializeSnapshot(snapshot, maximum = 7800) {
 
 export function buildGithubContext(config, job, execute = spawnSync, capturedAt = new Date().toISOString()) {
   const snapshots = [];
-  for (const number of extractReferencedPullRequests(job)) {
+  const references = Array.isArray(job.githubReferences) && job.githubReferences.length
+    ? job.githubReferences.filter(number => Number.isInteger(number) && number > 0 && number <= 9_999_999).slice(0, 3)
+    : extractReferencedPullRequests(job);
+  for (const number of references) {
     try {
       const first = runGh(config, number, execute);
       if (first.status !== 0) {

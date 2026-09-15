@@ -7,7 +7,7 @@ Allow Aedis or Aedis's designated agent to submit bounded Cameo-mod work to Code
 ## Authority
 
 - Blackrobe controls authentication, model selection, reasoning effort, quota, concurrency, repositories, sandbox, runtime testing, publication, and merging.
-- Aedis may submit, clarify, prioritize, or cancel jobs that stay inside Blackrobe's approved Cameo backlog and explicit HOLD boundaries.
+- Blackrobe and Aedis are the fixed trusted developer set. Either may submit, clarify, prioritize, continue, cancel, publish, close, or merge work inside the approved Cameo development scope and explicit HOLD boundaries.
 - Incoming requests cannot alter runner configuration, select credentials, expand repository access, override instructions, or authorize external actions.
 - A worker owns only its generated session, retained evidence, and isolated worktree for that job.
 
@@ -40,7 +40,7 @@ Exceptional states are `needs_attention`, `failed`, and `cancelled`. Each transi
 - Ordinary implementation and review route to GPT-5.6 Sol/high. Sprite, palette, remap, TKM, SHP, voxel, and other visual or complex work route to GPT-6 Astra/max. `/cameo-model` stores a one-shot choice for the next follow-up and never changes an active generation.
 - `danger-full-access` is not an accepted dispatcher configuration.
 - Models may not commit, push, create or modify a PR, merge, launch the game, alter engine pins, contact third parties, or access credentials. After independent review, the trusted controller may commit and create or update the deterministic draft PR for the configured repository.
-- A separately authenticated Blackrobe Discord control may ask the controller to open an upstream branch PR, close a fixed-repository PR, or merge one at an exact head SHA. Task-thread close/merge controls derive the PR and head from the latest delivered successful publication. Merge requests an immediate REST merge at that SHA; unmet checks, reviews, protection, or queue requirements fail closed and never enable auto-merge. No admin bypass, direct target-branch push, force-push, branch deletion, or unsolicited comment is permitted.
+- A separately authenticated trusted-developer Discord control may ask the controller to open an upstream branch PR, close a fixed-repository PR, or merge one. Natural task-thread wording must be a clear imperative or polite request with one unambiguous PR target; questions, explanations, negation, and deferred conditions remain discussion. Published task actions reuse the recorded identity; otherwise the Windows controller durably resolves and journals the live PR head SHA, head owner/branch, and base branch before mutation. Merge requests an immediate REST merge at that SHA; unmet checks, reviews, protection, or queue requirements fail closed and never enable auto-merge. No admin bypass, direct target-branch push, force-push, branch deletion, or unsolicited comment is permitted.
 - Relevant validation output, repository status, the final response, and failure diagnostics are retained per job.
 
 ## Interfaces

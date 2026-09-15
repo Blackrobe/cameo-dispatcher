@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import {
   githubActionPaths,
+  githubActionIntent,
   reconcileGithubActionOutcomes,
   runJournaledGithubAction,
   runLockedJournaledGithubAction
@@ -107,6 +108,25 @@ test("a live runner lock blocks a new GitHub mutation callback", async () => {
     assert.match(outcome.result.summary, /runner lock already exists/);
   } finally {
     await releaseRunnerLock(lock, lockPath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a resolved action without an outcome is never replayed after interruption", async () => {
+  const { root, localConfig, action } = fixture();
+  const paths = githubActionPaths(localConfig, action.id);
+  mkdirSync(paths.actionRoot, { recursive: true });
+  writeFileSync(paths.intentPath, `${JSON.stringify(githubActionIntent(action), null, 2)}\n`);
+  writeFileSync(paths.resolvedPath, `${JSON.stringify(githubActionIntent(action), null, 2)}\n`);
+  let executed = false;
+  try {
+    const outcome = await runLockedJournaledGithubAction(localConfig, action, async () => {
+      executed = true;
+    });
+    assert.equal(executed, false);
+    assert.equal(outcome.state, "needs_attention");
+    assert.match(outcome.result.summary, /inspect GitHub state instead of replaying/);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

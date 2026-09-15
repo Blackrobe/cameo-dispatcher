@@ -7,6 +7,21 @@ const terminalStates = new Set(["ready_for_review", "needs_attention", "failed",
 const requestIdPattern = /^[a-z0-9][a-z0-9._-]{2,127}$/i;
 const branchNamePattern = /^(?!\/)(?!.*\.\.)(?!.*[~^:?*\[\\\s])(?!.*\/$)(?!.*\.lock$)[A-Za-z0-9._\/-]{1,200}$/;
 
+function extractTaskPrNumbers(text, maximum = 3) {
+  const numbers = [];
+  const add = raw => {
+    const number = Number(raw);
+    if (Number.isInteger(number) && number > 0 && number <= 9_999_999 && !numbers.includes(number) && numbers.length < maximum)
+      numbers.push(number);
+  };
+  for (const match of String(text ?? "").matchAll(/https:\/\/github\.com\/cameo-mod\/Cameo-mod\/pull\/(\d+)(?![A-Za-z0-9])/gi))
+    add(match[1]);
+  const withoutUrls = String(text ?? "").replace(/https?:\/\/[^\s<>()]+/gi, " ");
+  for (const match of withoutUrls.matchAll(/\bPR\s*#?\s*(\d{1,7})\b/gi))
+    add(match[1]);
+  return numbers;
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -310,19 +325,40 @@ export class JobStore {
         throw new Error("GitHub action root job is unavailable");
       const published = this.getLatestRun(root.id);
       const publication = published?.result?.provenance?.publication;
-      if (!published || published.state !== "ready_for_review" || published.deliveryState !== "delivered")
+      if (!published || !new Set(["ready_for_review", "needs_attention"]).has(published.state) || published.deliveryState !== "delivered")
         throw new Error("The latest task run must be completed and delivered before controlling its PR");
-      if (!publication || !/^https:\/\/github\.com\/cameo-mod\/Cameo-mod\/pull\/\d+$/i.test(publication.prUrl ?? "")
-        || !/^[0-9a-f]{40}$/i.test(publication.lastCommit ?? ""))
-        throw new Error("This task has no verified published Cameo PR");
-      resolved = {
+      const publicationMatch = String(publication?.prUrl ?? "").match(/^https:\/\/github\.com\/cameo-mod\/Cameo-mod\/pull\/(\d+)$/i);
+      const publicationIsBound = publicationMatch && /^[0-9a-f]{40}$/i.test(publication.lastCommit ?? "")
+        && branchNamePattern.test(publication.branch ?? "");
+      const rootReferences = extractTaskPrNumbers(root.objective);
+      const requested = input.requestedPrNumber;
+      if (requested !== undefined && requested !== null && (!Number.isInteger(requested) || requested < 1 || requested > 9_999_999))
+        throw new AdmissionError("github_pr_invalid", "The requested PR number is invalid.");
+      if (publicationIsBound && requested !== undefined && requested !== null && requested !== Number(publicationMatch[1]))
+        throw new AdmissionError("github_pr_mismatch", `This task thread owns PR #${publicationMatch[1]}, not PR #${requested}.`);
+      if (!publicationIsBound && requested !== undefined && requested !== null
+        && rootReferences.length === 1 && requested !== rootReferences[0])
+        throw new AdmissionError("github_pr_mismatch", `This task thread references PR #${rootReferences[0]}, not PR #${requested}.`);
+      if (!publicationIsBound && (requested === undefined || requested === null) && rootReferences.length !== 1)
+        throw new AdmissionError("github_pr_ambiguous", "Name one PR number because this task thread does not own exactly one published PR.");
+      const prNumber = publicationIsBound ? Number(publicationMatch[1]) : requested ?? rootReferences[0];
+      resolved = publicationIsBound ? {
         ...resolved,
-        prNumber: Number(publication.prUrl.match(/\/pull\/(\d+)$/i)[1]),
+        prNumber,
         prUrl: publication.prUrl,
         expectedHeadSha: publication.lastCommit,
         headOwner: "Blackrobe",
         headBranch: publication.branch,
         baseBranch: "master",
+        discordThreadId: root.discordThreadId
+      } : {
+        ...resolved,
+        prNumber,
+        prUrl: `https://github.com/cameo-mod/Cameo-mod/pull/${prNumber}`,
+        expectedHeadSha: null,
+        headOwner: null,
+        headBranch: null,
+        baseBranch: null,
         discordThreadId: root.discordThreadId
       };
     }
@@ -330,11 +366,13 @@ export class JobStore {
     if (["close", "merge"].includes(resolved.action)) {
       if (!Number.isInteger(resolved.prNumber) || resolved.prNumber < 1 || resolved.prNumber > 9_999_999)
         throw new Error("GitHub action PR number is invalid");
-      if (!/^[0-9a-f]{40}$/i.test(resolved.expectedHeadSha ?? ""))
-        throw new Error("GitHub action expected head SHA is invalid");
-      if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(resolved.headOwner ?? "")
-        || !branchNamePattern.test(resolved.headBranch ?? "") || !branchNamePattern.test(resolved.baseBranch ?? ""))
+      const identitySupplied = [resolved.expectedHeadSha, resolved.headOwner, resolved.headBranch, resolved.baseBranch].some(Boolean);
+      if (identitySupplied && (!/^[0-9a-f]{40}$/i.test(resolved.expectedHeadSha ?? "")
+        || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(resolved.headOwner ?? "")
+        || !branchNamePattern.test(resolved.headBranch ?? "") || !branchNamePattern.test(resolved.baseBranch ?? "")))
         throw new Error("GitHub action expected PR identity is invalid");
+      if (!identitySupplied && !resolved.rootJobId)
+        throw new Error("Generic GitHub actions require an exact expected PR identity");
     }
     if (resolved.action === "merge" && !new Set(["merge", "squash", "rebase"]).has(resolved.mergeMethod ?? "merge"))
       throw new Error("GitHub merge method is invalid");

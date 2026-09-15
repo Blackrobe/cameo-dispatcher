@@ -4,10 +4,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { atomicWriteJson, readJson, validateFollowupJob, validateJob } from "./lib.mjs";
-import { buildCompletion, normalizeServerJob, sanitizeWorkerEnvironment } from "./worker-service-lib.mjs";
+import { buildCompletion, buildGithubDiscoveryReferences, normalizeServerJob, sanitizeWorkerEnvironment } from "./worker-service-lib.mjs";
 import { createSshTunnel } from "./ssh-tunnel.mjs";
 import { buildGithubContext } from "./github-context.mjs";
-import { executeGithubAction } from "./github-action-controller.mjs";
+import { executeGithubAction, resolveGithubAction } from "./github-action-controller.mjs";
 import { reconcileGithubActionOutcomes, runLockedJournaledGithubAction } from "./github-action-journal.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -86,9 +86,22 @@ function statusPathFor(localConfig, job) {
 async function runLocalJob(job) {
   const serverJob = normalizeServerJob(job);
   const localConfig = await readJson(localConfigPath);
+  const prevalidated = serverJob.runKind === "followup"
+    ? validateFollowupJob(serverJob)
+    : validateJob(serverJob);
+  let rootJob = null;
+  let publication = null;
+  if (prevalidated.runKind === "followup") {
+    const incomingRoot = path.join(localConfig.stateRoot, "incoming", `${prevalidated.rootRequestId}.json`);
+    const publicationPath = path.join(localConfig.stateRoot, "jobs", prevalidated.rootRequestId, "publication.json");
+    rootJob = await readJson(incomingRoot).catch(error => error.code === "ENOENT" ? null : Promise.reject(error));
+    publication = await readJson(publicationPath).catch(error => error.code === "ENOENT" ? null : Promise.reject(error));
+  }
+  const githubReferences = buildGithubDiscoveryReferences(prevalidated, rootJob, publication);
   const enrichedJob = {
-    ...serverJob,
-    controllerContext: buildGithubContext(localConfig, serverJob)
+    ...prevalidated,
+    githubReferences,
+    controllerContext: buildGithubContext(localConfig, { ...prevalidated, githubReferences })
   };
   const normalized = enrichedJob.runKind === "followup"
     ? validateFollowupJob(enrichedJob)
@@ -220,7 +233,12 @@ async function pollOnce() {
     await tunnel.stop();
     let githubOutcome;
     try {
-      githubOutcome = await runLockedJournaledGithubAction(localConfig, job, action => executeGithubAction(localConfig, action));
+      githubOutcome = await runLockedJournaledGithubAction(
+        localConfig,
+        job,
+        action => executeGithubAction(localConfig, action),
+        action => resolveGithubAction(localConfig, action)
+      );
     } finally {
       await tunnel.start();
     }

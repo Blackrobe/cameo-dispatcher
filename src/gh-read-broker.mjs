@@ -146,7 +146,10 @@ export async function startGhReadBroker({ config, job, worktreePath, auditPath, 
   const entries = {};
   const audit = [];
 
-  for (const number of extractReferencedPullRequests(job)) {
+  const pullRequests = Array.isArray(job.githubReferences) && job.githubReferences.length
+    ? job.githubReferences
+    : extractReferencedPullRequests(job);
+  for (const number of pullRequests.slice(0, 3)) {
     const viewArgs = ["pr", "view", String(number), "--repo", config.publication.repository, "--json", prFields];
     const first = executeGh(config, viewArgs, 2 * 1024 * 1024, execute);
     if (first.exitCode !== 0) {

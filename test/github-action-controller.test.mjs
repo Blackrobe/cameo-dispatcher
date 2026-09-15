@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { executeGithubAction } from "../src/github-action-controller.mjs";
+import { executeGithubAction, resolveGithubAction } from "../src/github-action-controller.mjs";
 
 const head = "a".repeat(40);
 const base = "b".repeat(40);
@@ -133,4 +133,31 @@ test("merge refuses head drift before invoking a write", () => {
     }
   }), /head moved/);
   assert.equal(calls.some(args => args[0] === "api" && args.includes("PUT")), false);
+});
+
+test("task-thread PR control resolves and pins live identity before mutation", () => {
+  const calls = [];
+  const unresolved = {
+    id: "CGA-RESOLVE", rootJobId: "CAM-20260915-ABCDEF12",
+    action: "merge", repository: "cameo-mod/Cameo-mod",
+    prNumber: 400, expectedHeadSha: null, headOwner: null,
+    headBranch: null, baseBranch: null, mergeMethod: "merge"
+  };
+  const execute = (bin, args) => {
+    calls.push(args);
+    return response({
+      number: 400, url: "https://github.com/cameo-mod/Cameo-mod/pull/400",
+      state: "OPEN", isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+      reviewDecision: null, headRefName: "feature", headRefOid: head,
+      headRepositoryOwner: { login: "Blackrobe" }, baseRefName: "master",
+      mergedAt: null, mergeCommit: null, autoMergeRequest: null
+    });
+  };
+  const resolved = resolveGithubAction(config, unresolved, { execute });
+  assert.equal(resolved.expectedHeadSha, head);
+  assert.equal(resolved.headOwner, "Blackrobe");
+  assert.equal(resolved.headBranch, "feature");
+  assert.equal(resolved.baseBranch, "master");
+  assert.equal(calls.length, 2);
+  assert.throws(() => executeGithubAction(config, unresolved, { execute }), /durably resolved/);
 });

@@ -17,6 +17,7 @@ export function githubActionPaths(localConfig, actionId) {
   return {
     root, actionRoot,
     intentPath: path.join(actionRoot, "intent.json"),
+    resolvedPath: path.join(actionRoot, "resolved.json"),
     outcomePath: path.join(actionRoot, "outcome.json"),
     deliveredPath: path.join(actionRoot, "delivered.json")
   };
@@ -75,12 +76,20 @@ export async function runJournaledGithubAction(localConfig, action, executeActio
   return outcome;
 }
 
-export async function runLockedJournaledGithubAction(localConfig, action, executeAction) {
+export async function runLockedJournaledGithubAction(localConfig, action, executeAction, resolveAction = async value => value) {
   return runJournaledGithubAction(localConfig, action, async retainedAction => {
     const lockPath = path.join(localConfig.stateRoot, "runner.lock");
     const lockHandle = await acquireRunnerLock(lockPath);
     try {
-      return await executeAction(retainedAction);
+      const paths = githubActionPaths(localConfig, retainedAction.id);
+      if (await exists(paths.resolvedPath))
+        throw new Error("GitHub action identity was resolved before an interrupted run; inspect GitHub state instead of replaying the mutation");
+      const resolved = await resolveAction(retainedAction);
+      if (resolved.id !== retainedAction.id || resolved.action !== retainedAction.action
+        || resolved.repository !== retainedAction.repository || resolved.prNumber !== retainedAction.prNumber)
+        throw new Error("resolved GitHub action differs from the owner-authorized target");
+      await atomicWriteJson(paths.resolvedPath, githubActionIntent(resolved));
+      return await executeAction(resolved);
     } finally {
       await releaseRunnerLock(lockHandle, lockPath);
     }

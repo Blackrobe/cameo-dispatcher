@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompletion, compactFinalResult, normalizeServerJob, sanitizeWorkerEnvironment } from "../src/worker-service-lib.mjs";
+import { buildCompletion, buildGithubDiscoveryReferences, compactFinalResult, normalizeServerJob, sanitizeWorkerEnvironment } from "../src/worker-service-lib.mjs";
 
 test("normalizes the server-frozen per-run execution policy", () => {
   const normalized = normalizeServerJob({
@@ -69,6 +69,27 @@ test("normalizes exact-session follow-up metadata and records its run revision",
   }, { status: "completed", summary: "Done" });
   assert.equal(completion.result.provenance.runRevision, 2);
   assert.equal(completion.result.provenance.parentJobId, normalized.parentJobId);
+});
+
+test("follow-up GitHub discovery inherits the trusted root task and retained publication", () => {
+  const followup = {
+    runKind: "followup",
+    rootRequestId: "discord-message-1549302348159914087",
+    objective: "try again",
+    acceptanceCriteria: ["Report the result."]
+  };
+  const references = buildGithubDiscoveryReferences(followup, {
+    requestId: followup.rootRequestId,
+    objective: "Inspect draft PR #400 and report its current state."
+  }, {
+    state: "published",
+    prUrl: "https://github.com/cameo-mod/Cameo-mod/pull/400"
+  });
+  assert.deepEqual(references, [400]);
+  const rejectedForeign = buildGithubDiscoveryReferences(followup, null, {
+    state: "published", prUrl: "https://github.com/foreign/repo/pull/400"
+  });
+  assert.deepEqual(rejectedForeign, []);
 });
 
 test("maps local failures without claiming review readiness", () => {

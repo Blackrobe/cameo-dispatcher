@@ -86,7 +86,7 @@ export const commands = [
       )),
   new SlashCommandBuilder()
     .setName("cameo-github")
-    .setDescription("Owner only: control upstream Cameo pull requests")
+    .setDescription("Trusted developers: control upstream Cameo pull requests")
     .addSubcommand(subcommand => subcommand
       .setName("open")
       .setDescription("Open a PR between two existing upstream branches")
@@ -234,7 +234,7 @@ function githubActionEmbed(action, title) {
     .setTitle(title)
     .setDescription(String(description).slice(0, 1800))
     .addFields(fields)
-    .setFooter({ text: "via Cameo Dispatcher · owner-authorized GitHub control" })
+    .setFooter({ text: "via Cameo Dispatcher · trusted-developer GitHub control" })
     .setTimestamp(new Date(action.updatedAt));
 }
 
@@ -350,7 +350,7 @@ export function createMentionHandler(config, store, client) {
       }
       if (parsed.kind === "github_task_control" && !inCandidateThread) {
         if (store.allowRateLimitNotice(message.author.id, 10))
-          await replyWithoutMentions(message, "Use this owner control inside the registered task thread whose PR should be changed.");
+          await replyWithoutMentions(message, "Use this trusted-developer control inside the registered task thread whose PR should be changed.");
         return;
       }
       if ((message.attachments?.size ?? 0) > 0) {
@@ -367,28 +367,19 @@ export function createMentionHandler(config, store, client) {
           return;
         }
         if (parsed.kind === "github_task_control") {
-          if (!config.adminUserIds.has(message.author.id)) {
-            if (store.allowRateLimitNotice(message.author.id, 10))
-              await replyWithoutMentions(message, "Only Blackrobe's verified Discord identity can close or merge a task PR.");
-            return;
-          }
           const action = store.createGithubAction({
             interactionId: message.id,
             rootJobId: root.id,
             requesterDiscordId: message.author.id,
             requesterName: message.member?.displayName || message.author.globalName || message.author.username,
             action: parsed.action,
+            requestedPrNumber: parsed.requestedPrNumber,
             repository: "cameo-mod/Cameo-mod",
             mergeMethod: "merge",
             discordThreadId: message.channelId
           });
           if (action.createDisposition === "new")
-            await message.reply({ embeds: [githubActionEmbed(action, "Owner GitHub control queued")], ...mentionReplyOptions });
-          return;
-        }
-        if (message.author.id !== root.requesterDiscordId && !config.adminUserIds.has(message.author.id)) {
-          if (store.allowRateLimitNotice(message.author.id, 10))
-            await replyWithoutMentions(message, "Only the original requester or a dispatcher owner may continue this job.");
+            await message.reply({ embeds: [githubActionEmbed(action, "Trusted GitHub control queued")], ...mentionReplyOptions });
           return;
         }
 
@@ -604,10 +595,6 @@ export async function startDiscord(config, store) {
       }
 
       if (interaction.commandName === "cameo-github") {
-        if (!config.adminUserIds.has(interaction.user.id)) {
-          await interaction.reply({ content: "Only Blackrobe's verified Discord identity can control upstream PRs.", ephemeral: true });
-          return;
-        }
         const subcommand = interaction.options.getSubcommand(true);
         const common = {
           interactionId: interaction.id,
@@ -634,7 +621,7 @@ export async function startDiscord(config, store) {
             baseBranch: interaction.options.getString("base-branch", true),
             mergeMethod: subcommand === "merge" ? interaction.options.getString("method") ?? "merge" : null
           });
-        await interaction.reply({ embeds: [githubActionEmbed(action, "Owner GitHub control queued")], ephemeral: true, allowedMentions: { parse: [] } });
+        await interaction.reply({ embeds: [githubActionEmbed(action, "Trusted GitHub control queued")], ephemeral: true, allowedMentions: { parse: [] } });
         return;
       }
 
@@ -690,7 +677,7 @@ export async function startDiscord(config, store) {
       }
 
       if (interaction.commandName === "cameo-cancel") {
-        const cancelled = store.cancelCurrent(jobId, interaction.user.id, config.adminUserIds.has(interaction.user.id));
+        const cancelled = store.cancelCurrent(jobId, interaction.user.id, true);
         await interaction.reply({ embeds: [systemEmbed(cancelled, "Cameo task cancelled")], allowedMentions: { parse: [] } });
       }
     } catch (error) {

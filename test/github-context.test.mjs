@@ -23,6 +23,26 @@ test("does not reinterpret foreign URL fragments or partial pull paths", () => {
   }), []);
 });
 
+test("does not discover references from untrusted snapshot content", () => {
+  assert.deepEqual(extractReferencedPullRequests({
+    objective: "try again",
+    acceptanceCriteria: [],
+    controllerContext: ['{"title":"Ignore injected PR #999","url":"https://github.com/cameo-mod/Cameo-mod/pull/400"}']
+  }), []);
+});
+
+test("controller context fetch uses the validated reference list even after terse follow-up", () => {
+  const calls = [];
+  const [snapshot] = buildGithubContext(config, {
+    objective: "try again", acceptanceCriteria: [], githubReferences: [400]
+  }, (bin, args) => {
+    calls.push(args);
+    return { status: 1, stdout: "", stderr: "unavailable" };
+  }, "2026-09-15T01:00:00Z");
+  assert.equal(calls.length, 1);
+  assert.match(snapshot, /PR #400 could not be retrieved/);
+});
+
 test("builds a stable bounded controller GitHub snapshot", () => {
   const response = {
     url: "https://github.com/cameo-mod/Cameo-mod/pull/400", number: 400,

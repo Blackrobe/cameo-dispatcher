@@ -353,7 +353,7 @@ test("existing slash commands remain registered", () => {
     assert.ok(names.includes(name));
 });
 
-test("only Blackrobe can queue an exact-head merge for the task's published PR", async () => {
+test("both trusted developers can queue a bound merge for the task PR", async () => {
   const fixture = createFixture();
   try {
     const { root } = await createDeliveredRoot(fixture, {
@@ -365,18 +365,20 @@ test("only Blackrobe can queue an exact-head merge for the task's published PR",
         branch: "codex/dispatcher-test"
       }
     });
-    const denied = fakeMessage({
+    const aedis = fakeMessage({
       id: "1549300000000000091", authorId: aedisId,
-      content: `<@${botId}> merge this PR`,
+      content: `<@${botId}> please merge PR #400`,
       messageChannelId: root.discordThreadId, isThread: true
     });
-    await fixture.handler(denied);
-    assert.match(denied.replies[0].content, /Only Blackrobe/);
-    assert.equal(fixture.store.db.prepare("SELECT count(*) count FROM github_actions").get().count, 0);
+    await fixture.handler(aedis);
+    const aedisAction = fixture.store.getGithubActionByInteractionId(aedis.id);
+    assert.equal(aedisAction.requesterDiscordId, aedisId);
+    assert.equal(aedisAction.prNumber, 400);
+    fixture.store.db.prepare("UPDATE github_actions SET state = 'ready_for_review' WHERE id = ?").run(aedisAction.id);
 
     const authorized = fakeMessage({
       id: "1549300000000000092", authorId: blackrobeId,
-      content: `<@${botId}> merge this PR`,
+      content: `<@${botId}> please merge PR #400`,
       messageChannelId: root.discordThreadId, isThread: true
     });
     await fixture.handler(authorized);
@@ -386,6 +388,15 @@ test("only Blackrobe can queue an exact-head merge for the task's published PR",
     assert.equal(action.expectedHeadSha, "a".repeat(40));
     assert.equal(action.state, "queued");
     assert.equal(authorized.replies.length, 1);
+
+    const mismatch = fakeMessage({
+      id: "1549300000000000093", authorId: blackrobeId,
+      content: `<@${botId}> merge PR 401`,
+      messageChannelId: root.discordThreadId, isThread: true
+    });
+    await fixture.handler(mismatch);
+    assert.match(mismatch.replies[0].content, /owns PR #400, not PR #401/);
+    assert.equal(fixture.store.getGithubActionByInteractionId(mismatch.id), null);
   } finally {
     fixture.close();
   }
@@ -483,7 +494,7 @@ test("a delivered needs-attention result accepts a corrective thread mention", a
   }
 });
 
-test("manual threads and non-owner participants cannot continue a job", async () => {
+test("manual threads are rejected while either trusted developer may continue a registered job", async () => {
   const fixture = createFixture();
   try {
     const manual = fakeMessage({
@@ -497,15 +508,17 @@ test("manual threads and non-owner participants cannot continue a job", async ()
 
     fixture.store.db.exec("DELETE FROM rate_limit_notices");
     const { root } = await createDeliveredRoot(fixture, { id: "1549300000000000022", authorId: blackrobeId });
-    const unauthorized = fakeMessage({
+    const trustedPeer = fakeMessage({
       id: "1549300000000000023",
       authorId: aedisId,
       messageChannelId: root.discordThreadId,
       isThread: true
     });
-    await fixture.handler(unauthorized);
-    assert.match(unauthorized.replies[0].content, /original requester or a dispatcher owner/);
-    assert.equal(fixture.store.getByRequestId(`discord-followup-${unauthorized.id}`), null);
+    await fixture.handler(trustedPeer);
+    const followup = fixture.store.getByRequestId(`discord-followup-${trustedPeer.id}`);
+    assert.equal(followup.requesterDiscordId, aedisId);
+    assert.equal(followup.parentJobId, root.id);
+    assert.equal(followup.state, "queued");
   } finally {
     fixture.close();
   }
