@@ -128,7 +128,7 @@ async function main() {
     if (!await exists(rootStatusPath))
       throw new NeedsAttentionError("The dispatcher-owned root session record is missing.");
     const rootStatus = await readJson(rootStatusPath);
-    if (rootStatus.state !== "ready_for_review")
+    if (!["ready_for_review", "needs_attention"].includes(rootStatus.state))
       throw new NeedsAttentionError("The dispatcher-owned root run is not ready for continuation.");
     if (rootStatus.codexThreadId !== job.resumeSessionId)
       throw new NeedsAttentionError("The stored session UUID does not match the dispatcher-owned local root record.");

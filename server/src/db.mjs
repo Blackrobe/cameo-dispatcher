@@ -434,13 +434,22 @@ export class JobStore {
       if (!root || root.parentJobId)
         throw new AdmissionError("followup_job_missing", "The registered root job is unavailable.");
       const sessionId = root.result?.provenance?.codexThreadId;
-      if (root.state !== "ready_for_review" || root.deliveryState !== "delivered" || typeof sessionId !== "string")
+      if (!["ready_for_review", "needs_attention"].includes(root.state)
+        || root.deliveryState !== "delivered" || typeof sessionId !== "string")
         throw new AdmissionError("followup_not_ready", "The original job has no delivered resumable result yet.");
 
       const latest = this.getLatestRun(root.id);
-      if (latest.id !== root.id && ["failed", "needs_attention"].includes(latest.state))
+      const failedPredecessor = this.db.prepare(`
+        SELECT id FROM jobs
+        WHERE (id = ? OR parent_job_id = ?) AND state = 'failed'
+        ORDER BY run_revision LIMIT 1
+      `).get(root.id, root.id);
+      if (failedPredecessor)
+        throw new AdmissionError("followup_blocked", "A failed earlier run must be reconciled before another continuation.");
+      if (latest.id !== root.id && latest.state === "failed")
         throw new AdmissionError("followup_blocked", "The latest follow-up requires attention before another continuation.");
-      if (latest.id !== root.id && latest.state === "ready_for_review" && latest.deliveryState !== "delivered")
+      if (latest.id !== root.id && ["ready_for_review", "needs_attention"].includes(latest.state)
+        && latest.deliveryState !== "delivered")
         throw new AdmissionError("followup_delivery_pending", "The latest follow-up result must be delivered before another continuation.");
 
       const activeStates = ["provisioning", "queued", "running"];
@@ -661,6 +670,12 @@ export class JobStore {
               delivery_next_at = ?, delivery_last_error = NULL
             WHERE id = ? AND state = 'running'
           `).run(timestamp, timestamp, timestamp, parsed.id);
+          if (parsed.parentJobId)
+            this.blockDependentFollowups(
+              parsed,
+              `Blocked because follow-up run ${parsed.runRevision} lost its runner lease.`,
+              timestamp
+            );
           this.db.exec("COMMIT");
           return { ...this.get(parsed.id), claimDisposition: "expired_needs_attention" };
         }
@@ -683,14 +698,15 @@ export class JobStore {
               EXISTS (
                 SELECT 1 FROM jobs root
                 WHERE root.id = candidate.parent_job_id
-                  AND root.state = 'ready_for_review' AND root.delivery_state = 'delivered'
+                  AND root.state IN ('ready_for_review', 'needs_attention')
+                  AND root.delivery_state = 'delivered'
               )
               AND NOT EXISTS (
                 SELECT 1 FROM jobs previous
                 WHERE previous.parent_job_id = candidate.parent_job_id
                   AND previous.run_revision < candidate.run_revision
                   AND NOT (
-                    (previous.state = 'ready_for_review' AND previous.delivery_state = 'delivered')
+                    (previous.state IN ('ready_for_review', 'needs_attention') AND previous.delivery_state = 'delivered')
                     OR previous.state = 'cancelled'
                   )
               )

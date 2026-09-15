@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { JobStore } from "../src/db.mjs";
+import { AdmissionError, JobStore } from "../src/db.mjs";
 
 function withStore(run) {
   const root = mkdtempSync(path.join(os.tmpdir(), "cameo-dispatcher-"));
@@ -307,4 +307,52 @@ test("model selection updates only the earliest unclaimed queued revision", () =
   assert.equal(selected.modelTarget, "queued_run");
   assert.equal(store.get(first.id).model, "gpt-6-astra");
   assert.equal(store.get(second.id).model, "gpt-5.6-sol");
+}));
+
+test("failed predecessors block later corrective admission even when the latest run is delivered", () => withStore(store => {
+  let root = createQueued(store, "failed-chain");
+  store.claim("runner-1");
+  root = store.complete(root.id, "runner-1", "ready_for_review", { provenance: { codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6" } });
+  root = store.markDelivered(root.id, root.deliveryRevision, "root-result");
+  let failed = store.createFollowup({
+    requestId: "failed-chain-run-2", requesterDiscordId: "12345", requesterName: "Aedis",
+    objective: "Run 2", acceptanceCriteria: ["Done"], scope: [], parentJobId: root.id,
+    source: { kind: "followup", guildId: "10001", channelId: "10002", messageId: "10003" }
+  });
+  store.claimProvisioning(failed.id, "failed-chain-claim");
+  failed = store.setFollowupQueued(failed.id, "failed-chain-claim");
+  store.claim("runner-1");
+  failed = store.complete(failed.id, "runner-1", "failed", null, "execution failed");
+  failed = store.markDelivered(failed.id, failed.deliveryRevision, "failed-result");
+  assert.throws(() => store.createFollowup({
+    requestId: "failed-chain-run-3", requesterDiscordId: "12345", requesterName: "Aedis",
+    objective: "Run 3", acceptanceCriteria: ["Done"], scope: [], parentJobId: root.id
+  }), error => error instanceof AdmissionError && error.code === "followup_blocked");
+}));
+
+test("lease expiry blocks already queued dependent follow-ups", () => withStore(store => {
+  let root = createQueued(store, "lease-chain");
+  store.claim("runner-1");
+  root = store.complete(root.id, "runner-1", "ready_for_review", { provenance: { codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6" } });
+  root = store.markDelivered(root.id, root.deliveryRevision, "root-result");
+  let messageId = 20000;
+  const make = (id, objective) => {
+    const created = store.createFollowup({
+    requestId: id, requesterDiscordId: "12345", requesterName: "Aedis",
+    objective, acceptanceCriteria: ["Done"], scope: [], parentJobId: root.id,
+    source: { kind: "followup", guildId: "20001", channelId: "20002", messageId: String(++messageId) }
+    });
+    const claim = `${id}-claim`;
+    store.claimProvisioning(created.id, claim);
+    return store.setFollowupQueued(created.id, claim);
+  };
+  const run2 = make("lease-chain-run-2", "Run 2");
+  const run3 = make("lease-chain-run-3", "Run 3");
+  store.claim("runner-1");
+  store.db.prepare("UPDATE jobs SET lease_expires_at = ? WHERE id = ?").run("2000-01-01T00:00:00.000Z", run2.id);
+  const expired = store.claim("runner-1");
+  assert.equal(expired.id, run2.id);
+  assert.equal(expired.state, "needs_attention");
+  assert.equal(store.get(run3.id).state, "needs_attention");
+  assert.equal(store.claim("runner-1"), null);
 }));

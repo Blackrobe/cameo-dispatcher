@@ -413,6 +413,28 @@ test("registered-thread mention creates one exact-session follow-up run", async 
   }
 });
 
+test("a delivered needs-attention result accepts a corrective thread mention", async () => {
+  const fixture = createFixture();
+  try {
+    const { root } = await createDeliveredRoot(fixture, { id: "1549300000000000015" });
+    fixture.store.db.prepare("UPDATE jobs SET state = 'needs_attention' WHERE id = ?").run(root.id);
+    const correction = fakeMessage({
+      id: "1549300000000000016",
+      authorId: aedisId,
+      content: `<@${botId}> use the reported limitation and continue with a corrective check`,
+      messageChannelId: root.discordThreadId,
+      isThread: true
+    });
+    await fixture.handler(correction);
+    const followup = fixture.store.getByRequestId(`discord-followup-${correction.id}`);
+    assert.equal(followup.state, "queued");
+    assert.equal(followup.resumeSessionId, root.result.provenance.codexThreadId);
+    assert.equal(fixture.store.claim("blackrobe-windows-1").id, followup.id);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("manual threads and non-owner participants cannot continue a job", async () => {
   const fixture = createFixture();
   try {
