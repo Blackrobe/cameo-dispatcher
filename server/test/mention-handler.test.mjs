@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { commands, createMentionHandler, createSlashJob, recoverMentionProvisioning } from "../src/discord.mjs";
+import { commands, createMentionHandler, createSlashJob, recoverMentionProvisioning, resultFields } from "../src/discord.mjs";
 import { AdmissionError, JobStore } from "../src/db.mjs";
 import { defaultMentionAcceptance } from "../src/mention-intake.mjs";
 
@@ -350,6 +350,15 @@ test("existing slash commands remain registered", () => {
   const names = commands.map(command => command.name);
   for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-model", "cameo-pause", "cameo-resume"])
     assert.ok(names.includes(name));
+});
+
+test("worker result fields always display the effective model and effort", () => {
+  const fields = resultFields({
+    id: "CAM-20260915-MODEL001", runRevision: 2, state: "ready_for_review",
+    model: "gpt-5.6-sol", reasoningEffort: "high",
+    result: { provenance: { model: "gpt-6-astra", reasoningEffort: "max" } }
+  });
+  assert.equal(fields.find(field => field.name === "Model").value, "gpt-6-astra · max");
 });
 
 test("visual mention routes the run to Astra max", async () => {

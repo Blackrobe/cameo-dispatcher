@@ -135,13 +135,18 @@ function resultSummary(job) {
   return summary.slice(0, 1800);
 }
 
-function resultFields(job) {
+export function resultFields(job) {
   const result = job.result ?? {};
   const fields = [
     { name: "Job", value: job.parentJobId ?? job.id, inline: true },
     { name: "Run", value: String(job.runRevision ?? 1), inline: true },
     { name: "State", value: job.state, inline: true },
-    { name: "Provider", value: `${job.result?.provenance?.provider ?? "OpenAI"} · ${job.result?.provenance?.tool ?? "Codex Worker"}`, inline: true }
+    { name: "Provider", value: `${job.result?.provenance?.provider ?? "OpenAI"} · ${job.result?.provenance?.tool ?? "Codex Worker"}`, inline: true },
+    {
+      name: "Model",
+      value: `${job.result?.provenance?.model ?? job.model ?? "unknown"} · ${job.result?.provenance?.reasoningEffort ?? job.reasoningEffort ?? "unknown"}`,
+      inline: true
+    }
   ];
   if (Array.isArray(result.validation) && result.validation.length)
     fields.push({ name: "Validation", value: result.validation.join("\n").slice(0, 900) });
