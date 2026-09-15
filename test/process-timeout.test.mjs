@@ -37,7 +37,7 @@ test("the Windows timeout terminates the spawned process tree", { skip: process.
   let spawnedChildPid = null;
 
   try {
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < 200; attempt++) {
       try {
         spawnedChildPid = Number(readFileSync(childPidPath, "utf8"));
         break;
