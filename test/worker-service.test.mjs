@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompletion, normalizeServerJob, sanitizeWorkerEnvironment } from "../src/worker-service-lib.mjs";
+import { buildCompletion, compactFinalResult, normalizeServerJob, sanitizeWorkerEnvironment } from "../src/worker-service-lib.mjs";
 
 test("normalizes the server-frozen per-run execution policy", () => {
   const normalized = normalizeServerJob({
@@ -88,4 +88,44 @@ test("removes dispatcher and provider credentials from Codex child environments"
     CODEX_API_KEY: "codex-secret"
   });
   assert.deepEqual(sanitized, { PATH: "safe-path" });
+});
+
+test("compacts oversized model diagnostics below the dispatcher request limit", () => {
+  const huge = "x".repeat(300000);
+  const compact = compactFinalResult({
+    status: "needs_attention", summary: huge,
+    changedFiles: Array(200).fill(huge), validation: Array(40).fill(huge),
+    risks: Array(40).fill(huge), nextAction: huge
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(compact)) < 128 * 1024);
+  assert.equal(compact.changedFiles.length, 100);
+  assert.equal(compact.validation.length, 20);
+  assert.match(compact.summary, /truncated/);
+});
+
+test("bounds multibyte result text by serialized bytes", () => {
+  const multibyte = "🧪".repeat(100000);
+  const completion = buildCompletion({ state: "needs_attention" }, {
+    status: "needs_attention", summary: multibyte,
+    changedFiles: Array(100).fill(multibyte), validation: Array(20).fill(multibyte),
+    risks: Array(20).fill(multibyte), nextAction: multibyte
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(completion), "utf8") < 128 * 1024);
+});
+
+test("bounds reviewer and publication provenance", () => {
+  const huge = "r".repeat(300000);
+  const completion = buildCompletion({
+    state: "ready_for_review", reviewer: { summary: huge, findings: [huge], validationGaps: [huge] },
+    publication: { state: "published", branch: huge, lastCommit: huge, prUrl: huge, candidateHash: huge }
+  }, { status: "completed", summary: "Done", changedFiles: [], validation: [], risks: [], nextAction: null });
+  assert.ok(Buffer.byteLength(JSON.stringify(completion), "utf8") < 128 * 1024);
+});
+
+test("bounds failed-state results as well as errors", () => {
+  const huge = "f".repeat(300000);
+  const completion = buildCompletion({ state: "failed", error: huge }, {
+    status: "needs_attention", summary: huge, changedFiles: [huge], validation: [huge], risks: [huge], nextAction: huge
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(completion), "utf8") < 128 * 1024);
 });

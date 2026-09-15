@@ -61,6 +61,8 @@ export function validateCandidate(worktreePath, job, expectedHead, gitBin = "git
   const paths = changedPaths(worktreePath, gitBin);
   if (paths.length > 100)
     throw new Error("candidate exceeds the 100-file publication limit");
+  if (paths.length === 0)
+    return { head, paths, candidateHash: null, records: [] };
   for (const file of paths) {
     const lower = file.toLowerCase();
     if (protectedExact.has(file) || protectedPrefixes.some(prefix => lower.startsWith(prefix.toLowerCase())))

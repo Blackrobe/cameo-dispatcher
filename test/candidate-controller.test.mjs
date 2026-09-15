@@ -29,6 +29,11 @@ test("validates a bounded in-scope candidate without moving HEAD", () => withRep
   assert.equal(candidate.candidateHash.length, 64);
 }));
 
+test("a clean worktree is a valid zero-change candidate", () => withRepo((root, git) => {
+  const candidate = validateCandidate(root, { scope: [], model: "gpt-5.6-sol", objective: "Inspect only" }, git("rev-parse", "HEAD"));
+  assert.deepEqual(candidate, { head: git("rev-parse", "HEAD"), paths: [], candidateHash: null, records: [] });
+}));
+
 test("publication recovery is deterministic and fails closed on branch drift", () => {
   const config = { publication: { branchPrefix: "codex/dispatcher-" } };
   assert.equal(deterministicBranchName(config, "Discord Message 123"), "codex/dispatcher-discord-message-123");
