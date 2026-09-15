@@ -1,0 +1,10 @@
+{
+  "repoRoot": "C:\\path\\to\\Cameo-mod",
+  "baseRef": "upstream/master",
+  "worktreeRoot": "C:\\path\\to\\cameo-dispatcher\\worktrees",
+  "stateRoot": "C:\\path\\to\\cameo-dispatcher\\state",
+  "codexBin": "codex",
+  "sandbox": "read-only",
+  "maxJobMinutes": 60,
+  "sshDestination": "ubuntu@example-host"
+}

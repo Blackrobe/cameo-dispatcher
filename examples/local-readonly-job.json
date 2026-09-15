@@ -1,0 +1,16 @@
+{
+  "requestId": "local-readonly-proof",
+  "requestedBy": {
+    "human": "Owner",
+    "tool": "Codex local proof"
+  },
+  "objective": "Read mods/cameo/mod.yaml and identify the active weapon YAML include entries. Explain how you distinguished active includes from commented or dormant content. Do not edit any files.",
+  "acceptanceCriteria": [
+    "List the active weapon YAML include entries found in mods/cameo/mod.yaml.",
+    "State the exact file inspected and the method used to exclude commented or dormant entries.",
+    "Make no repository changes and run no game process."
+  ],
+  "scope": [
+    "mods/cameo/mod.yaml"
+  ]
+}

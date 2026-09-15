@@ -1,0 +1,13 @@
+{
+  "name": "cameo-task-dispatcher-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "run-job": "node src/run-job.mjs"
+  },
+  "engines": {
+    "node": ">=24.17.0"
+  }
+}
