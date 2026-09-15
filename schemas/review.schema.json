@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings", "validationGaps"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["approved", "needs_attention"] },
+    "summary": { "type": "string" },
+    "findings": { "type": "array", "items": { "type": "string" } },
+    "validationGaps": { "type": "array", "items": { "type": "string" } }
+  }
+}

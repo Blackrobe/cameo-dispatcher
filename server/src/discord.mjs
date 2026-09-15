@@ -11,6 +11,7 @@ import {
 
 import { AdmissionError } from "./db.mjs";
 import { defaultMentionAcceptance, parseMentionIntake } from "./mention-intake.mjs";
+import { chooseRunPolicy, MODELS } from "./run-policy.mjs";
 
 export const commands = [
   new SlashCommandBuilder()
@@ -25,7 +26,28 @@ export const commands = [
       .setName("acceptance")
       .setDescription("Semicolon-separated acceptance checks")
       .setRequired(true)
-      .setMaxLength(1000)),
+      .setMaxLength(1000))
+    .addStringOption(option => option
+      .setName("model")
+      .setDescription("Owner override; otherwise routed by task")
+      .addChoices(
+        { name: "GPT-5.6 Sol", value: MODELS.sol },
+        { name: "GPT-6 Astra", value: MODELS.astra }
+      ))
+    .addStringOption(option => option
+      .setName("effort")
+      .setDescription("Owner override for reasoning effort")
+      .addChoices(
+        { name: "High", value: "high" },
+        { name: "Max", value: "max" }
+      ))
+    .addStringOption(option => option
+      .setName("mode")
+      .setDescription("Owner override; draft PR is the normal execution lane")
+      .addChoices(
+        { name: "Edit and draft PR", value: "draft_pr" },
+        { name: "Read only", value: "read_only" }
+      )),
   new SlashCommandBuilder()
     .setName("cameo-status")
     .setDescription("Show a submitted Cameo task")
@@ -44,6 +66,25 @@ export const commands = [
     .setName("cameo-worker")
     .setDescription("Show dispatcher pause and Windows worker availability"),
   new SlashCommandBuilder()
+    .setName("cameo-model")
+    .setDescription("Owner only: choose the model for the next turn in this job thread")
+    .addStringOption(option => option
+      .setName("model")
+      .setDescription("Model for the next follow-up")
+      .setRequired(true)
+      .addChoices(
+        { name: "GPT-5.6 Sol", value: MODELS.sol },
+        { name: "GPT-6 Astra", value: MODELS.astra }
+      ))
+    .addStringOption(option => option
+      .setName("effort")
+      .setDescription("Reasoning effort for the next follow-up")
+      .setRequired(true)
+      .addChoices(
+        { name: "High", value: "high" },
+        { name: "Max", value: "max" }
+      )),
+  new SlashCommandBuilder()
     .setName("cameo-pause")
     .setDescription("Owner only: pause new worker claims"),
   new SlashCommandBuilder()
@@ -61,9 +102,12 @@ function systemEmbed(job, title) {
     .setTitle(title)
     .setDescription(job.objective.slice(0, 4000))
     .addFields(
-      { name: "Job", value: job.id, inline: true },
+      { name: "Job", value: job.parentJobId ?? job.id, inline: true },
+      { name: "Run", value: String(job.runRevision ?? 1), inline: true },
       { name: "State", value: job.state, inline: true },
-      { name: "Requester", value: job.requesterName, inline: true }
+      { name: "Requester", value: job.requesterName, inline: true },
+      { name: "Execution", value: job.executionMode === "draft_pr" ? "edit + draft PR" : "read only", inline: true },
+      { name: "Model", value: `${job.model ?? MODELS.sol} · ${job.reasoningEffort ?? "high"}`, inline: true }
     )
     .setFooter({ text: "via Cameo Dispatcher · GitHub remains authoritative" })
     .setTimestamp(new Date(job.updatedAt));
@@ -94,7 +138,8 @@ function resultSummary(job) {
 function resultFields(job) {
   const result = job.result ?? {};
   const fields = [
-    { name: "Job", value: job.id, inline: true },
+    { name: "Job", value: job.parentJobId ?? job.id, inline: true },
+    { name: "Run", value: String(job.runRevision ?? 1), inline: true },
     { name: "State", value: job.state, inline: true },
     { name: "Provider", value: `${job.result?.provenance?.provider ?? "OpenAI"} · ${job.result?.provenance?.tool ?? "Codex Worker"}`, inline: true }
   ];
@@ -112,7 +157,9 @@ function resultFields(job) {
 function controlEmbed(config, store, title) {
   const control = store.getControlState();
   const runner = store.getRunnerStatus(config.runnerId);
-  const workerValue = runner.online
+  const workerValue = runner.isolated
+    ? `busy · isolated model phase · ${runner.currentJobId}`
+    : runner.online
     ? `${runner.state}${runner.currentJobId ? ` · ${runner.currentJobId}` : ""}`
     : "offline";
   return new EmbedBuilder()
@@ -133,7 +180,7 @@ async function replyWithoutMentions(message, content) {
   return message.reply({ content, ...mentionReplyOptions });
 }
 
-export function createSlashJob(store, interaction, objective, acceptanceCriteria) {
+export function createSlashJob(store, interaction, objective, acceptanceCriteria, runPolicy = chooseRunPolicy(objective)) {
   return store.createConversational({
     requestId: `discord-${interaction.id}`,
     requesterDiscordId: interaction.user.id,
@@ -141,6 +188,7 @@ export function createSlashJob(store, interaction, objective, acceptanceCriteria
     objective,
     acceptanceCriteria,
     scope: [],
+    ...runPolicy,
     source: {
       kind: "slash",
       guildId: interaction.guildId,
@@ -186,11 +234,32 @@ async function provisionMentionJob({ config, store, client, job, claimToken, sou
   return store.setDiscordThread(job.id, thread.id, claimToken);
 }
 
+async function provisionFollowupJob({ store, client, job, claimToken, sourceMessage = null }) {
+  const channel = sourceMessage?.channel ?? await client.channels.fetch(job.source.channelId);
+  let acknowledgement;
+  if (job.discordAcknowledgementId) {
+    acknowledgement = await channel.messages.fetch(job.discordAcknowledgementId);
+  } else {
+    const original = sourceMessage ?? await channel.messages.fetch(job.source.messageId);
+    acknowledgement = await original.reply({
+      embeds: [systemEmbed(job, "Cameo follow-up provisioning")],
+      nonce: job.source.messageId,
+      enforceNonce: true,
+      ...mentionReplyOptions
+    });
+    job = store.setDiscordAcknowledgement(job.id, acknowledgement.id, claimToken);
+  }
+  return store.setFollowupQueued(job.id, claimToken);
+}
+
 export function createMentionHandler(config, store, client) {
   return async message => {
-    if (message.guildId !== config.guildId || message.channelId !== config.channelId)
+    const inBaseChannel = message.channelId === config.channelId;
+    const inCandidateThread = Boolean(message.channel?.isThread?.() && message.channel.parentId === config.channelId);
+    if (message.guildId !== config.guildId || (!inBaseChannel && !inCandidateThread))
       return;
-    if (!message.author || message.author.bot || message.webhookId || message.applicationId || message.system || message.editedTimestamp)
+    if (!message.author || message.author.bot || message.webhookId || message.applicationId || message.system
+      || message.editedTimestamp || (message.messageSnapshots?.size ?? 0) > 0)
       return;
     if (!config.allowedUserIds.has(message.author.id))
       return;
@@ -221,6 +290,49 @@ export function createMentionHandler(config, store, client) {
         return;
       }
 
+      if (inCandidateThread) {
+        const root = store.getRootByThreadId(message.channelId);
+        if (!root) {
+          if (store.allowRateLimitNotice(message.author.id, 10))
+            await replyWithoutMentions(message, "This is not a registered Cameo Dispatcher job thread. Start unrelated work in #agent-office.");
+          return;
+        }
+        if (message.author.id !== root.requesterDiscordId && !config.adminUserIds.has(message.author.id)) {
+          if (store.allowRateLimitNotice(message.author.id, 10))
+            await replyWithoutMentions(message, "Only the original requester or a dispatcher owner may continue this job.");
+          return;
+        }
+
+        let followup = store.createFollowup({
+          requestId: `discord-followup-${message.id}`,
+          requesterDiscordId: message.author.id,
+          requesterName: message.member?.displayName || message.author.globalName || message.author.username,
+          objective: parsed.objective,
+          acceptanceCriteria: [...defaultMentionAcceptance],
+          scope: root.scope,
+          ...chooseRunPolicy(parsed.objective),
+          parentJobId: root.id,
+          source: {
+            kind: "followup",
+            guildId: message.guildId,
+            channelId: message.channelId,
+            messageId: message.id
+          }
+        });
+        if (followup.state !== "provisioning")
+          return;
+        const followupClaim = randomUUID();
+        if (!store.claimProvisioning(followup.id, followupClaim))
+          return;
+        try {
+          followup = await provisionFollowupJob({ store, client, job: followup, claimToken: followupClaim, sourceMessage: message });
+        } catch (error) {
+          store.failProvisioning(followup.id, error.message, followupClaim);
+          throw error;
+        }
+        return;
+      }
+
       let job = store.createConversational({
         requestId: `discord-message-${message.id}`,
         requesterDiscordId: message.author.id,
@@ -228,6 +340,7 @@ export function createMentionHandler(config, store, client) {
         objective: parsed.objective,
         acceptanceCriteria: [...defaultMentionAcceptance],
         scope: [],
+        ...chooseRunPolicy(parsed.objective),
         source: {
           kind: "mention",
           guildId: message.guildId,
@@ -267,7 +380,10 @@ export async function recoverMentionProvisioning(config, store, client) {
       continue;
     try {
       const current = store.get(candidate.id);
-      await provisionMentionJob({ config, store, client, job: current, claimToken: provisioningClaim });
+      if (current.source?.kind === "followup")
+        await provisionFollowupJob({ store, client, job: current, claimToken: provisioningClaim });
+      else
+        await provisionMentionJob({ config, store, client, job: current, claimToken: provisioningClaim });
     } catch (error) {
       console.error(`mention provisioning recovery failed for ${candidate.id}: ${error.message}`);
     }
@@ -286,7 +402,7 @@ async function publishThroughWebhook(config, job) {
   const payload = {
     username: identity.displayName,
     avatar_url: identity.avatarUrl || undefined,
-    content: `[${identity.owner}/${identity.tool}] ${job.state}: ${job.id}`,
+    content: `[${identity.owner}/${identity.tool}] ${job.state}: ${job.parentJobId ?? job.id} · run ${job.runRevision ?? 1}`,
     allowed_mentions: { parse: [] },
     embeds: [{
       author: { name: identity.displayName, icon_url: identity.avatarUrl || undefined },
@@ -370,6 +486,34 @@ export async function startDiscord(config, store) {
         return;
       }
 
+      if (interaction.commandName === "cameo-model") {
+        if (!config.adminUserIds.has(interaction.user.id)) {
+          await interaction.reply({ content: "Only a dispatcher owner can select a model explicitly.", ephemeral: true });
+          return;
+        }
+        if (!interaction.channel?.isThread() || interaction.channel.parentId !== config.channelId) {
+          await interaction.reply({ content: "Use /cameo-model inside a registered Cameo job thread.", ephemeral: true });
+          return;
+        }
+        const root = store.getRootByThreadId(interaction.channelId);
+        if (!root) {
+          await interaction.reply({ content: "This is not a registered Cameo Dispatcher job thread.", ephemeral: true });
+          return;
+        }
+        const model = interaction.options.getString("model", true);
+        const effort = interaction.options.getString("effort", true);
+        const updated = store.setNextRunModel(root.id, model, effort);
+        const target = updated.modelTarget === "queued_run"
+          ? `queued run ${updated.runRevision}`
+          : "the next submitted follow-up";
+        await interaction.reply({
+          content: `${target}: ${model} at ${effort} effort. An already-running turn is unchanged.`,
+          ephemeral: true,
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
       if (interaction.commandName === "cameo-task") {
         if (interaction.channelId !== config.channelId) {
           await interaction.reply({ content: "Submit new jobs in #agent-office; use job threads for status and context.", ephemeral: true });
@@ -380,7 +524,17 @@ export async function startDiscord(config, store) {
         const acceptance = interaction.options.getString("acceptance", true).split(";").map(value => value.trim()).filter(Boolean);
         if (acceptance.length === 0)
           throw new Error("at least one acceptance criterion is required");
-        let job = createSlashJob(store, interaction, objective, acceptance);
+        const explicitModel = interaction.options.getString("model");
+        const explicitEffort = interaction.options.getString("effort");
+        const explicitMode = interaction.options.getString("mode");
+        if ((explicitModel || explicitEffort || explicitMode) && !config.adminUserIds.has(interaction.user.id))
+          throw new AdmissionError("owner_policy_only", "Only a dispatcher owner can override model, effort, or execution mode.");
+        const runPolicy = chooseRunPolicy(objective, {
+          model: explicitModel ?? undefined,
+          effort: explicitEffort ?? undefined,
+          executionMode: explicitMode ?? undefined
+        });
+        let job = createSlashJob(store, interaction, objective, acceptance, runPolicy);
         try {
           const message = await interaction.editReply({ embeds: [systemEmbed(job, "Cameo task provisioning")], allowedMentions: { parse: [] } });
           const thread = await message.startThread({ name: `${job.id} · ${escapeThreadName(objective)}`, autoArchiveDuration: 1440 });
@@ -400,7 +554,7 @@ export async function startDiscord(config, store) {
       }
 
       const jobId = interaction.options.getString("job", true).trim();
-      const job = store.get(jobId);
+      const job = store.getStatusRun(jobId);
       if (!job) {
         await interaction.reply({ content: "Job not found.", ephemeral: true });
         return;
@@ -412,7 +566,7 @@ export async function startDiscord(config, store) {
       }
 
       if (interaction.commandName === "cameo-cancel") {
-        const cancelled = store.cancel(jobId, interaction.user.id);
+        const cancelled = store.cancelCurrent(jobId, interaction.user.id, config.adminUserIds.has(interaction.user.id));
         await interaction.reply({ embeds: [systemEmbed(cancelled, "Cameo task cancelled")], allowedMentions: { parse: [] } });
       }
     } catch (error) {
@@ -452,7 +606,7 @@ export async function startDiscord(config, store) {
         embeds: [new EmbedBuilder()
           .setColor(config.runnerIdentity.color)
           .setAuthor({ name: config.runnerIdentity.displayName, iconURL: config.runnerIdentity.avatarUrl || undefined })
-          .setTitle(`${job.id} · ${job.state}`)
+          .setTitle(`${job.parentJobId ?? job.id} · run ${job.runRevision ?? 1} · ${job.state}`)
           .setDescription(resultSummary(job))
           .addFields(resultFields(job))
           .setFooter({ text: "via Cameo Dispatcher" })

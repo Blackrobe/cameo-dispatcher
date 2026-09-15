@@ -51,7 +51,7 @@ export function createApiServer({ config, store, onCompletionReady }) {
 
       if (request.method === "POST" && url.pathname === "/v1/worker/claim") {
         await readJson(request);
-        const job = store.claim(config.runnerId);
+        const job = store.claim(config.runnerId, config.jobLeaseSeconds);
         const busy = job?.state === "running";
         const runner = store.recordRunnerPresence(config.runnerId, busy ? "busy" : "idle", busy ? job.id : null);
         return sendJson(response, 200, { job, control: store.getControlState(), runner });
@@ -60,7 +60,7 @@ export function createApiServer({ config, store, onCompletionReady }) {
       const heartbeatMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/heartbeat$/);
       if (request.method === "POST" && heartbeatMatch) {
         await readJson(request);
-        const job = store.heartbeat(decodeURIComponent(heartbeatMatch[1]), config.runnerId);
+        const job = store.heartbeat(decodeURIComponent(heartbeatMatch[1]), config.runnerId, config.jobLeaseSeconds);
         const runner = store.recordRunnerPresence(config.runnerId, "busy", job.id);
         return sendJson(response, 200, { job, runner });
       }

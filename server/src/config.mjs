@@ -33,6 +33,9 @@ export function loadConfig() {
   const port = Number(process.env.LISTEN_PORT ?? 8765);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("LISTEN_PORT must be a valid TCP port");
+  const jobLeaseSeconds = Number(process.env.JOB_LEASE_SECONDS ?? 14400);
+  if (!Number.isInteger(jobLeaseSeconds) || jobLeaseSeconds < 600 || jobLeaseSeconds > 14400)
+    throw new Error("JOB_LEASE_SECONDS must be an integer between 600 and 14400");
 
   const allowedUserIds = parseCsv(process.env.DISCORD_ALLOWED_USER_IDS);
   if (allowedUserIds.size === 0)
@@ -56,6 +59,7 @@ export function loadConfig() {
     runnerIdentity: parseIdentity(required("RUNNER_IDENTITY_JSON")),
     databasePath: process.env.DATABASE_PATH?.trim() || "/data/dispatcher.sqlite",
     listenHost: process.env.LISTEN_HOST?.trim() || "0.0.0.0",
-    listenPort: port
+    listenPort: port,
+    jobLeaseSeconds
   });
 }

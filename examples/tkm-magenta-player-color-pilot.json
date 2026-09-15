@@ -1,0 +1,20 @@
+{
+  "requestId": "tkm-magenta-player-color-20260915",
+  "requestedBy": {
+    "human": "Blackrobe",
+    "tool": "Cameo Dispatcher supervised pilot"
+  },
+  "objective": "Inspect and fix incorrect magenta player-color pixels in active TKM sprites. Trace the active manifest and sequences first, preserve intended remap behavior and non-player artwork, make the smallest correct asset or sequence change, and validate the affected assets.",
+  "acceptanceCriteria": [
+    "Identify the active TKM sprite files and the precise cause of the incorrect magenta player color.",
+    "Correct the affected active files without broad unrelated recoloring.",
+    "Run appropriate static or asset validation inside the restricted worktree.",
+    "Report visual uncertainty and any runtime verification still needed.",
+    "Leave commit, push, and draft-PR publication to the dispatcher controller."
+  ],
+  "scope": ["mods/cameo"],
+  "executionMode": "draft_pr",
+  "model": "gpt-6-astra",
+  "reasoningEffort": "max",
+  "modelSource": "owner_supervised_visual_pilot"
+}

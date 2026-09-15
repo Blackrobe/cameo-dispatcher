@@ -116,3 +116,71 @@ test("paused control state keeps jobs queued while recording an idle runner", as
   assert.equal(body.runner.state, "idle");
   assert.equal(store.get(queued.id).state, "queued");
 }));
+
+test("worker API claims and completes an exact-session follow-up as a separate revision", async () => withApi(async ({ store, request }) => {
+  const provisioning = store.create({
+    requestId: "discord-root-followup-api",
+    requesterDiscordId: "12345",
+    requesterName: "Aedis",
+    objective: "Initial audit.",
+    acceptanceCriteria: ["Report findings."],
+    scope: []
+  });
+  let root = store.setDiscordThread(provisioning.id, "thread-followup-api");
+  store.claim("blackrobe-windows-1");
+  root = store.complete(root.id, "blackrobe-windows-1", "ready_for_review", {
+    status: "completed",
+    summary: "Initial result",
+    provenance: {
+      codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6",
+      baseCommit: "abc123"
+    }
+  });
+  root = store.markDelivered(root.id, root.deliveryRevision, "root-result-message");
+
+  let followup = store.createFollowup({
+    requestId: "discord-followup-api",
+    requesterDiscordId: "12345",
+    requesterName: "Aedis",
+    objective: "Recheck the conclusion.",
+    acceptanceCriteria: ["Report changes."],
+    scope: [],
+    parentJobId: root.id,
+    source: {
+      kind: "followup",
+      guildId: "1234567890",
+      channelId: "1234567891",
+      messageId: "1234567892"
+    }
+  });
+  assert.equal(store.claimProvisioning(followup.id, "followup-api-claim"), true);
+  store.setDiscordAcknowledgement(followup.id, "followup-ack", "followup-api-claim");
+  followup = store.setFollowupQueued(followup.id, "followup-api-claim");
+
+  const claimResponse = await request("/v1/worker/claim", { method: "POST", body: "{}" });
+  const claimed = (await claimResponse.json()).job;
+  assert.equal(claimed.id, followup.id);
+  assert.equal(claimed.parentJobId, root.id);
+  assert.equal(claimed.runRevision, 2);
+  assert.equal(claimed.resumeSessionId, "01a0a275-a2f1-73f1-89ae-f94d4b983fd6");
+
+  assert.equal((await request(`/v1/jobs/${followup.id}/heartbeat`, { method: "POST", body: "{}" })).status, 200);
+  const completeResponse = await request(`/v1/jobs/${followup.id}/result`, {
+    method: "POST",
+    body: JSON.stringify({
+      state: "ready_for_review",
+      result: {
+        status: "completed",
+        summary: "Follow-up result",
+        provenance: {
+          codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6",
+          runRevision: 2
+        }
+      }
+    })
+  });
+  assert.equal(completeResponse.status, 200);
+  const completed = (await completeResponse.json()).job;
+  assert.equal(completed.deliveryState, "pending");
+  assert.equal(completed.runRevision, 2);
+}));

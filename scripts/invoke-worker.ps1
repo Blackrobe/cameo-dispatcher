@@ -22,31 +22,18 @@ $environmentNames = @(
     'CAMEO_RUNNER_TOKEN',
     'CAMEO_RUNNER_CONFIG',
     'CAMEO_POLL_INTERVAL_MS',
-    'CAMEO_MAX_CONSECUTIVE_ERRORS'
+    'CAMEO_MAX_CONSECUTIVE_ERRORS',
+    'CAMEO_SSH_DESTINATION',
+    'CAMEO_TUNNEL_LOCAL_PORT',
+    'CAMEO_TUNNEL_REMOTE_HOST',
+    'CAMEO_TUNNEL_REMOTE_PORT'
 )
 $previousEnvironment = @{}
-$tunnel = $null
 $tokenBytes = $null
 $token = $null
 $mutex = [System.Threading.Mutex]::new($false, 'Local\CameoDispatcherWorker')
 $ownsMutex = $false
 $transcriptStarted = $false
-
-function Test-LoopbackPort {
-    param([int] $Port)
-
-    $client = [System.Net.Sockets.TcpClient]::new()
-    try {
-        $client.Connect('127.0.0.1', $Port)
-        return $true
-    }
-    catch {
-        return $false
-    }
-    finally {
-        $client.Dispose()
-    }
-}
 
 try {
     $ownsMutex = $mutex.WaitOne(0)
@@ -75,45 +62,6 @@ try {
         throw 'SshDestination must be provided as a parameter or in config.json.'
     }
 
-    if (Test-LoopbackPort -Port $LocalPort) {
-        throw "Local loopback port $LocalPort is already in use."
-    }
-
-    $sshArguments = @(
-        '-N',
-        '-T',
-        '-L', "127.0.0.1:${LocalPort}:${RemoteHost}:${RemotePort}",
-        '-o', 'ExitOnForwardFailure=yes',
-        '-o', 'ServerAliveInterval=30',
-        '-o', 'ServerAliveCountMax=3',
-        '-o', 'BatchMode=yes',
-        '-o', 'StrictHostKeyChecking=yes',
-        $SshDestination
-    )
-    $tunnel = Start-Process -FilePath 'ssh.exe' -ArgumentList $sshArguments -WindowStyle Hidden -PassThru
-
-    $tunnelReady = $false
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
-        if ($tunnel.HasExited) {
-            throw "SSH tunnel exited before becoming ready (exit $($tunnel.ExitCode))."
-        }
-
-        if (Test-LoopbackPort -Port $LocalPort) {
-            $tunnelReady = $true
-            break
-        }
-
-        Start-Sleep -Milliseconds 250
-    }
-    if (-not $tunnelReady) {
-        throw 'SSH tunnel did not become ready within five seconds.'
-    }
-
-    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$LocalPort/healthz" -TimeoutSec 5
-    if ($health.status -ne 'ok') {
-        throw 'Forwarded dispatcher health check failed.'
-    }
-
     $protectedBytes = [System.IO.File]::ReadAllBytes($secretPath)
     $tokenBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
         $protectedBytes,
@@ -133,6 +81,10 @@ try {
     [System.Environment]::SetEnvironmentVariable('CAMEO_RUNNER_CONFIG', $configPath, 'Process')
     [System.Environment]::SetEnvironmentVariable('CAMEO_POLL_INTERVAL_MS', '5000', 'Process')
     [System.Environment]::SetEnvironmentVariable('CAMEO_MAX_CONSECUTIVE_ERRORS', '6', 'Process')
+    [System.Environment]::SetEnvironmentVariable('CAMEO_SSH_DESTINATION', $SshDestination, 'Process')
+    [System.Environment]::SetEnvironmentVariable('CAMEO_TUNNEL_LOCAL_PORT', [string]$LocalPort, 'Process')
+    [System.Environment]::SetEnvironmentVariable('CAMEO_TUNNEL_REMOTE_HOST', $RemoteHost, 'Process')
+    [System.Environment]::SetEnvironmentVariable('CAMEO_TUNNEL_REMOTE_PORT', [string]$RemotePort, 'Process')
 
     $workerArguments = @($workerPath)
     if ($Once) {
@@ -154,11 +106,6 @@ finally {
     }
     $token = $null
     $tokenBytes = $null
-
-    if ($tunnel -and -not $tunnel.HasExited) {
-        Stop-Process -Id $tunnel.Id -Force
-        $tunnel.WaitForExit(5000) | Out-Null
-    }
 
     if ($ownsMutex) {
         $mutex.ReleaseMutex()

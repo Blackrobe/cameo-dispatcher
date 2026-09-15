@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import { assertPathWithin, mapWorkerResultState, validateConfig, validateJob } from "../src/lib.mjs";
+import { assertPathWithin, mapWorkerResultState, validateConfig, validateFollowupJob, validateJob } from "../src/lib.mjs";
 
 test("accepts a bounded structured job", () => {
   const job = validateJob({
@@ -33,13 +33,34 @@ test("rejects unsafe request IDs and paths", () => {
   }));
 });
 
+test("requires trusted continuation metadata for follow-up runs", () => {
+  const followup = validateFollowupJob({
+    requestId: "discord-followup-123456789",
+    requestedBy: { human: "Aedis", tool: "Cameo Dispatcher" },
+    objective: "Recheck the result.",
+    acceptanceCriteria: ["Report changes."],
+    scope: [],
+    runKind: "followup",
+    parentJobId: "CAM-20260915-1234ABCD",
+    rootRequestId: "discord-message-123456789",
+    runRevision: 2,
+    resumeSessionId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6"
+  });
+  assert.equal(followup.runRevision, 2);
+  assert.throws(() => validateFollowupJob({ ...followup, resumeSessionId: "not-a-uuid" }));
+  assert.throws(() => validateFollowupJob({ ...followup, runRevision: 1 }));
+});
+
 test("limits sandbox configuration to non-bypass modes", () => {
   const base = {
     repoRoot: "C:\\repo",
     baseRef: "upstream/master",
     worktreeRoot: "C:\\worktrees",
     stateRoot: "C:\\state",
-    codexBin: "codex"
+    codexBin: "C:\\trusted\\codex.exe",
+    ghBin: "C:\\trusted\\gh.exe",
+    gitBin: "C:\\trusted\\git.exe",
+    sshBin: "C:\\trusted\\ssh.exe"
   };
 
   const readOnly = validateConfig({ ...base, sandbox: "read-only" });

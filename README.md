@@ -1,6 +1,6 @@
 # Cameo Task Dispatcher Prototype
 
-Owner-controlled proof that one structured Cameo job can launch one local Codex worker in an isolated worktree and retain reviewable evidence.
+Owner-controlled Discord intake that launches local Codex work in isolated Cameo-mod worktrees and retains reviewable evidence.
 
 This is an owner-controlled Discord-to-Codex prototype. A constrained OCI control plane accepts authenticated slash commands, retains a durable queue, and posts results back to per-job Discord threads. An outbound-only Windows runner invokes the local `codex` executable in isolated worktrees using the owner's existing ChatGPT login. The OCI service never receives or copies Codex authentication.
 
@@ -14,20 +14,21 @@ The planned authority and interface boundary is defined in `docs/dispatch-contra
 - Request payloads contain only an objective, acceptance criteria, repository-relative scope, identity metadata, and an idempotent request ID.
 - A single exclusive runner lock prevents concurrent workers.
 - Every job gets a detached worktree at an exact resolved base commit.
-- Worktrees and evidence are retained. The dispatcher does not clean, commit, push, create PRs, merge, launch the game, edit engine pins, or contact third parties.
+- Worktrees and evidence are retained. Models never commit or publish. For a write job, a separate controller may commit and create or update one verified draft PR after independent review.
 - `danger-full-access` is rejected.
 - Do not copy `%USERPROFILE%\\.codex\\auth.json` to CI, cloud hosting, another developer, or this project.
 
 ## Proven path
 
-The complete read-only execution path has been exercised successfully through `/cameo-task`:
+The execution path supports read-only work and a contained edit-to-draft-PR lane:
 
 1. An allowlisted Discord user submits `/cameo-task` in the private `#agent-office` channel.
 2. The OCI bot creates a durable job and a dedicated Discord thread.
-3. The Windows runner opens an authenticated SSH loopback tunnel and claims one job.
-4. Codex runs in a detached worktree at the owner-configured `upstream/master` commit.
-5. The result returns to the same thread through the server-owned webhook persona, including job, run, base, validation, and risk provenance.
-6. The worktree and local evidence are retained for review; no commit, push, PR, merge, or game launch occurs.
+3. The Windows runner opens an authenticated SSH loopback tunnel and claims one job, then closes that tunnel before a model or reviewer starts.
+4. Codex runs with elevated Windows sandboxing, external apps/web/MCP disabled, and no command network access.
+5. A write candidate is independently reviewed and checked for exact HEAD, path scope, size, modes, and credential-like content.
+6. The trusted controller creates or updates one deterministic draft PR; merge remains outside the dispatcher.
+7. The result returns to the same thread with job, run, model, reviewer, base, validation, risk, session, and publication provenance.
 
 Mention-only intake has separately passed a queue-only production smoke: one `@Cameo Dispatcher` source message created one sourced job, acknowledgement, and bot-owned thread; status and cancellation persisted without starting Codex or creating a worktree. Its first real Aedis-submitted execution remains a pilot gate.
 
@@ -49,12 +50,17 @@ Conversational jobs receive owner-controlled acceptance policy, use the Discord 
 
 Controls remain unambiguous slash commands:
 
-- `/cameo-task` — structured task with explicit acceptance criteria;
+- `/cameo-task` — structured task with explicit acceptance criteria and owner-only model, effort, and execution-mode overrides;
 - `/cameo-status` and `/cameo-cancel` — state and requester-owned queued cancellation;
+- `/cameo-model` — Blackrobe-only one-shot model and effort selection for the next follow-up in the current registered thread;
 - `/cameo-worker` — worker and pause availability;
 - `/cameo-pause` and `/cameo-resume` — Blackrobe-only claim control.
 
 `@Cameo Dispatcher help` returns usage without invoking Codex. Mention-form `status CAM-...` and `cancel CAM-...` only redirect to the exact slash commands; natural-language parsing never changes dispatcher control state.
+
+An authorized leading mention inside the SQLite-registered bot-created job thread creates a versioned follow-up run instead of a new root job. The original requester or a dispatcher owner may continue the job. The Windows runner verifies the dispatcher-owned root record, exact session UUID, retained worktree, base commit, clean status, and emitted resume UUID before accepting the result. Concurrent follow-ups are queued and executed in revision order, with each revision retaining its own events, diagnostics, final result, and Discord delivery record. Missing or conflicting local state becomes `needs_attention`; no replacement session or worktree is created. Automatic session archiving is intentionally not used.
+
+New tasks default to the draft-PR lane. Ordinary work routes to GPT-5.6 Sol at high effort. Sprite, palette, remap, TKM, SHP, voxel, and other visual work routes to GPT-6 Astra at max effort. The chosen model, effort, route, and run revision are frozen when submitted. `/cameo-model` affects only the next follow-up; it cannot mutate a generation already in progress.
 
 ## Local runner
 
@@ -72,9 +78,9 @@ Rerunning the same request ID returns the existing status instead of creating a 
 
 `src\worker-service.mjs` is the outbound-only Windows queue consumer. It requires `CAMEO_DISPATCHER_URL` and `CAMEO_RUNNER_TOKEN`; it does not invoke Codex when the queue is empty. Use `--once` for a single integration-test poll.
 
-`scripts\invoke-worker.ps1` is the credential-safe launcher. It:
+`scripts\invoke-worker.ps1` is the credential-safe launcher. Together with the worker service, it:
 
-- opens a hidden SSH tunnel from Windows loopback to the OCI loopback API;
+- opens a hidden SSH tunnel from Windows loopback to the OCI loopback API while idle, then closes it for the complete model/review phase;
 - decrypts the runner token from the current user's DPAPI-protected file only in memory;
 - runs the consumer under Blackrobe's Windows account;
 - removes the credential from the parent process environment and closes the tunnel on exit;
@@ -96,9 +102,9 @@ Run one poll with:
 
 Completed operational evidence includes single-user supervision, owner pause/availability controls, empty polling without model use, server restart, tunnel-loss restart, active-job retained-result reconciliation, exact safe stop/restart, and bounded Windows child-tree termination.
 
-Remaining gates are:
+Pilot gates are:
 
-1. Exercise an Aedis-submitted mention job and a subsequent explicit slash-command clarification or replacement job.
+1. Exercise an Aedis-submitted mention job and a subsequent mention-based continuation in its registered job thread.
 2. Exercise a live Discord delivery failure/retry while confirming one stable job and delivery revision.
-3. Run one controlled edit-and-test job before enabling write jobs generally; publication and merge remain separate owner-only actions.
+3. Require the included containment and cross-model resume proofs before enabling the draft-PR lane on a worker host.
 4. Shadow the current browser check during a short real-task pilot before deliberate cutover.

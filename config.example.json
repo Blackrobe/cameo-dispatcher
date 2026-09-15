@@ -1,10 +1,21 @@
 {
   "repoRoot": "C:\\path\\to\\Cameo-mod",
   "baseRef": "upstream/master",
-  "worktreeRoot": "C:\\path\\to\\cameo-dispatcher\\worktrees",
+  "worktreeRoot": "C:\\Users\\you\\CameoDispatcherWorktrees",
   "stateRoot": "C:\\path\\to\\cameo-dispatcher\\state",
-  "codexBin": "codex",
+  "codexBin": "C:\\absolute\\path\\to\\codex.exe",
+  "ghBin": "C:\\Program Files\\GitHub CLI\\gh.exe",
+  "gitBin": "C:\\Program Files\\Git\\cmd\\git.exe",
+  "sshBin": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
   "sandbox": "read-only",
   "maxJobMinutes": 60,
-  "sshDestination": "ubuntu@example-host"
+  "sshDestination": "ubuntu@example-host",
+  "publication": {
+    "enabled": false,
+    "remote": "origin",
+    "repository": "Blackrobe/Cameo-mod",
+    "baseBranch": "master",
+    "headOwner": "Blackrobe",
+    "branchPrefix": "codex/dispatcher-"
+  }
 }

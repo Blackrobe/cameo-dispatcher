@@ -21,7 +21,8 @@ function createFixture() {
     guildId,
     channelId,
     runnerId: "blackrobe-windows-1",
-    allowedUserIds: new Set([blackrobeId, aedisId])
+    allowedUserIds: new Set([blackrobeId, aedisId]),
+    adminUserIds: new Set([blackrobeId])
   };
   let recoveryChannel = null;
   const client = {
@@ -60,7 +61,10 @@ function fakeMessage({
   applicationId = null,
   system = false,
   editedTimestamp = null,
+  snapshotCount = 0,
   attachmentCount = 0,
+  isThread = false,
+  threadParentId = channelId,
   existingThread = false,
   replyError = null,
   threadSendError = null
@@ -98,8 +102,13 @@ function fakeMessage({
     applicationId,
     system,
     editedTimestamp,
+    messageSnapshots: { size: snapshotCount },
     attachments: { size: attachmentCount },
     channel: {
+      parentId: threadParentId,
+      isThread() {
+        return isThread;
+      },
       messages: {
         async fetch(messageId) {
           const stored = storedMessages.get(messageId);
@@ -124,6 +133,27 @@ function fakeMessage({
   return message;
 }
 
+async function createDeliveredRoot(fixture, { id = "1549300000000000001", authorId = aedisId } = {}) {
+  const source = fakeMessage({ id, authorId, content: `<@${botId}> inspect active YAML` });
+  await fixture.handler(source);
+  let root = fixture.store.getByRequestId(`discord-message-${id}`);
+  fixture.store.claim("blackrobe-windows-1");
+  root = fixture.store.complete(root.id, "blackrobe-windows-1", "ready_for_review", {
+    status: "completed",
+    summary: "Initial result",
+    changedFiles: [],
+    validation: ["Clean"],
+    risks: [],
+    nextAction: null,
+    provenance: {
+      codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6",
+      baseCommit: "a3a1c214a2fd3d91a42014a5d6f16e30014ec9f2"
+    }
+  });
+  root = fixture.store.markDelivered(root.id, root.deliveryRevision, "discord-result-1");
+  return { root, source };
+}
+
 test("valid Blackrobe and Aedis mentions create one sourced job each with owner defaults", async () => {
   const fixture = createFixture();
   try {
@@ -136,6 +166,9 @@ test("valid Blackrobe and Aedis mentions create one sourced job each with owner 
     const second = fixture.store.getByRequestId(`discord-message-${aedis.id}`);
     assert.equal(first.state, "queued");
     assert.equal(first.requesterDiscordId, blackrobeId);
+    assert.equal(first.executionMode, "draft_pr");
+    assert.equal(first.model, "gpt-5.6-sol");
+    assert.equal(first.reasoningEffort, "high");
     assert.deepEqual(first.acceptanceCriteria, defaultMentionAcceptance);
     assert.deepEqual(first.source, { kind: "mention", guildId, channelId, messageId: blackrobe.id });
     assert.equal(second.requesterDiscordId, aedisId);
@@ -165,7 +198,8 @@ test("rejects unauthorized context, ordinary text, edits, bots, webhooks, and at
       fakeMessage({ bot: true }),
       fakeMessage({ webhookId: "1549200000000000888" }),
       fakeMessage({ applicationId: "1549200000000000777" }),
-      fakeMessage({ system: true })
+      fakeMessage({ system: true }),
+      fakeMessage({ snapshotCount: 1 })
     ];
     for (const message of messages)
       await fixture.handler(message);
@@ -314,8 +348,22 @@ test("persistent admission limits bound outstanding work and rate-limit rejectio
 
 test("existing slash commands remain registered", () => {
   const names = commands.map(command => command.name);
-  for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-pause", "cameo-resume"])
+  for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-model", "cameo-pause", "cameo-resume"])
     assert.ok(names.includes(name));
+});
+
+test("visual mention routes the run to Astra max", async () => {
+  const fixture = createFixture();
+  try {
+    const message = fakeMessage({ content: `<@${botId}> fix incorrect magenta player color in TKM sprites` });
+    await fixture.handler(message);
+    const job = fixture.store.getByRequestId(`discord-message-${message.id}`);
+    assert.equal(job.model, "gpt-6-astra");
+    assert.equal(job.reasoningEffort, "max");
+    assert.equal(job.modelSource, "visual_route");
+  } finally {
+    fixture.close();
+  }
 });
 
 test("structured slash task creation uses the same persistent admission limits", () => {
@@ -333,6 +381,194 @@ test("structured slash task creation uses the same persistent admission limits",
       () => createSlashJob(fixture.store, interaction(3), "Third", ["Done"]),
       error => error instanceof AdmissionError && error.code === "user_queue_full"
     );
+  } finally {
+    fixture.close();
+  }
+});
+
+test("registered-thread mention creates one exact-session follow-up run", async () => {
+  const fixture = createFixture();
+  try {
+    const { root } = await createDeliveredRoot(fixture);
+    const followupMessage = fakeMessage({
+      id: "1549300000000000011",
+      authorId: aedisId,
+      content: `<@${botId}> recheck the conclusion against the current files`,
+      messageChannelId: root.discordThreadId,
+      isThread: true
+    });
+    await Promise.all([fixture.handler(followupMessage), fixture.handler(followupMessage)]);
+
+    const followup = fixture.store.getByRequestId(`discord-followup-${followupMessage.id}`);
+    assert.equal(followup.parentJobId, root.id);
+    assert.equal(followup.rootRequestId, root.requestId);
+    assert.equal(followup.runKind, "followup");
+    assert.equal(followup.runRevision, 2);
+    assert.equal(followup.resumeSessionId, root.result.provenance.codexThreadId);
+    assert.equal(followup.discordThreadId, root.discordThreadId);
+    assert.equal(followup.state, "queued");
+    assert.equal(followupMessage.replies.length, 1);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("manual threads and non-owner participants cannot continue a job", async () => {
+  const fixture = createFixture();
+  try {
+    const manual = fakeMessage({
+      id: "1549300000000000021",
+      authorId: aedisId,
+      messageChannelId: "1549300000000099999",
+      isThread: true
+    });
+    await fixture.handler(manual);
+    assert.match(manual.replies[0].content, /not a registered/);
+
+    fixture.store.db.exec("DELETE FROM rate_limit_notices");
+    const { root } = await createDeliveredRoot(fixture, { id: "1549300000000000022", authorId: blackrobeId });
+    const unauthorized = fakeMessage({
+      id: "1549300000000000023",
+      authorId: aedisId,
+      messageChannelId: root.discordThreadId,
+      isThread: true
+    });
+    await fixture.handler(unauthorized);
+    assert.match(unauthorized.replies[0].content, /original requester or a dispatcher owner/);
+    assert.equal(fixture.store.getByRequestId(`discord-followup-${unauthorized.id}`), null);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("queued follow-ups serialize behind prior delivery", async () => {
+  const fixture = createFixture();
+  try {
+    const { root } = await createDeliveredRoot(fixture, { id: "1549300000000000031" });
+    const firstMessage = fakeMessage({
+      id: "1549300000000000032",
+      authorId: aedisId,
+      messageChannelId: root.discordThreadId,
+      isThread: true,
+      content: `<@${botId}> first correction`
+    });
+    const secondMessage = fakeMessage({
+      id: "1549300000000000033",
+      authorId: aedisId,
+      messageChannelId: root.discordThreadId,
+      isThread: true,
+      content: `<@${botId}> second correction`
+    });
+    await fixture.handler(firstMessage);
+    await fixture.handler(secondMessage);
+    const first = fixture.store.getByRequestId(`discord-followup-${firstMessage.id}`);
+    const second = fixture.store.getByRequestId(`discord-followup-${secondMessage.id}`);
+    assert.equal(first.runRevision, 2);
+    assert.equal(second.runRevision, 3);
+
+    const claimedFirst = fixture.store.claim("blackrobe-windows-1");
+    assert.equal(claimedFirst.id, first.id);
+    assert.equal(fixture.store.claim("blackrobe-windows-1").id, first.id);
+    let completedFirst = fixture.store.complete(first.id, "blackrobe-windows-1", "ready_for_review", {
+      status: "completed",
+      summary: "First follow-up",
+      changedFiles: [], validation: [], risks: [], nextAction: null
+    });
+    assert.equal(fixture.store.claim("blackrobe-windows-1"), null);
+    completedFirst = fixture.store.markDelivered(first.id, completedFirst.deliveryRevision, "discord-followup-result-1");
+    assert.equal(completedFirst.deliveryState, "delivered");
+    assert.equal(fixture.store.claim("blackrobe-windows-1").id, second.id);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("cancelled follow-ups are skipped and do not strand later revisions", async () => {
+  const fixture = createFixture();
+  try {
+    const { root } = await createDeliveredRoot(fixture, { id: "1549300000000000041" });
+    const firstMessage = fakeMessage({
+      id: "1549300000000000042", authorId: aedisId,
+      messageChannelId: root.discordThreadId, isThread: true,
+      content: `<@${botId}> obsolete correction`
+    });
+    const secondMessage = fakeMessage({
+      id: "1549300000000000043", authorId: aedisId,
+      messageChannelId: root.discordThreadId, isThread: true,
+      content: `<@${botId}> replacement correction`
+    });
+    await fixture.handler(firstMessage);
+    await fixture.handler(secondMessage);
+    const first = fixture.store.getByRequestId(`discord-followup-${firstMessage.id}`);
+    const second = fixture.store.getByRequestId(`discord-followup-${secondMessage.id}`);
+    assert.equal(fixture.store.cancel(first.id, aedisId).state, "cancelled");
+    assert.equal(fixture.store.claim("blackrobe-windows-1").id, second.id);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("failed follow-up marks dependent queued revisions needs_attention", async () => {
+  const fixture = createFixture();
+  try {
+    const { root } = await createDeliveredRoot(fixture, { id: "1549300000000000051" });
+    const firstMessage = fakeMessage({
+      id: "1549300000000000052", authorId: aedisId,
+      messageChannelId: root.discordThreadId, isThread: true,
+      content: `<@${botId}> first correction`
+    });
+    const secondMessage = fakeMessage({
+      id: "1549300000000000053", authorId: aedisId,
+      messageChannelId: root.discordThreadId, isThread: true,
+      content: `<@${botId}> dependent correction`
+    });
+    await fixture.handler(firstMessage);
+    await fixture.handler(secondMessage);
+    const first = fixture.store.getByRequestId(`discord-followup-${firstMessage.id}`);
+    const second = fixture.store.getByRequestId(`discord-followup-${secondMessage.id}`);
+    fixture.store.claim("blackrobe-windows-1");
+    fixture.store.complete(first.id, "blackrobe-windows-1", "needs_attention", {
+      status: "needs_attention", summary: "Blocked", changedFiles: [], validation: [], risks: [], nextAction: null
+    });
+    const blocked = fixture.store.get(second.id);
+    assert.equal(blocked.state, "needs_attention");
+    assert.equal(blocked.deliveryState, "pending");
+    assert.match(blocked.error, /run 2 ended in needs_attention/);
+    assert.equal(fixture.store.claim("blackrobe-windows-1"), null);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("definitive follow-up provisioning failure blocks dependent revisions visibly", async () => {
+  const fixture = createFixture();
+  try {
+    const { root } = await createDeliveredRoot(fixture, { id: "1549300000000000061" });
+    const input = (messageId, objective) => ({
+      requestId: `discord-followup-${messageId}`,
+      requesterDiscordId: aedisId,
+      requesterName: "AedisToru",
+      objective,
+      acceptanceCriteria: ["Report findings."],
+      scope: root.scope,
+      parentJobId: root.id,
+      source: { kind: "followup", guildId, channelId: root.discordThreadId, messageId }
+    });
+    const first = fixture.store.createFollowup(input("1549300000000000062", "first"));
+    assert.equal(fixture.store.claimProvisioning(first.id, "first-provisioning"), true);
+    let second = fixture.store.createFollowup(input("1549300000000000063", "second"));
+    assert.equal(fixture.store.claimProvisioning(second.id, "second-provisioning"), true);
+    fixture.store.setDiscordAcknowledgement(second.id, "second-ack", "second-provisioning");
+    second = fixture.store.setFollowupQueued(second.id, "second-provisioning");
+
+    const failed = fixture.store.failProvisioning(first.id, "Discord thread unavailable", "first-provisioning");
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.deliveryState, "pending");
+    const dependent = fixture.store.get(second.id);
+    assert.equal(dependent.state, "needs_attention");
+    assert.equal(dependent.deliveryState, "pending");
+    assert.match(dependent.error, /failed during provisioning/);
+    assert.equal(fixture.store.claim("blackrobe-windows-1"), null);
   } finally {
     fixture.close();
   }

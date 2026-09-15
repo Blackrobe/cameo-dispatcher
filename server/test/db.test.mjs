@@ -224,7 +224,10 @@ test("migrates the pre-mention database in place without discarding jobs", () =>
     assert.equal(migrated.discordThreadId, "legacy-thread");
     assert.equal(migrated.source, null);
     const columns = new Set(store.db.prepare("PRAGMA table_info(jobs)").all().map(row => row.name));
-    for (const column of ["source_message_id", "provisioning_claim", "discord_ack_message_id"])
+    for (const column of [
+      "source_message_id", "provisioning_claim", "discord_ack_message_id",
+      "parent_job_id", "root_request_id", "run_revision", "resume_session_id"
+    ])
       assert.ok(columns.has(column));
   } finally {
     store.close();
@@ -258,4 +261,50 @@ test("stale provisioning claims cannot overwrite the current recovery owner", ()
 
   store.setDiscordAcknowledgement(job.id, "new-ack", "new-claim");
   assert.equal(store.setDiscordThread(job.id, "new-thread", "new-claim").state, "queued");
+}));
+
+test("freezes per-run policy and consumes a next-turn model override once", () => withStore(store => {
+  let root = store.create({
+    requestId: "model-root", requesterDiscordId: "12345", requesterName: "Aedis",
+    objective: "Fix unit rules.", acceptanceCriteria: ["Done"], scope: [],
+    executionMode: "draft_pr", model: "gpt-5.6-sol", reasoningEffort: "high", modelSource: "default_route"
+  });
+  root = store.setDiscordThread(root.id, "model-thread");
+  store.claim("runner-1");
+  root = store.complete(root.id, "runner-1", "ready_for_review", { provenance: { codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6" } });
+  root = store.markDelivered(root.id, root.deliveryRevision, "result-message");
+  store.setNextRunModel(root.id, "gpt-6-astra", "max");
+  const followup = store.createFollowup({
+    requestId: "model-followup", requesterDiscordId: "12345", requesterName: "Aedis",
+    objective: "Continue.", acceptanceCriteria: ["Done"], scope: [], parentJobId: root.id
+  });
+  assert.equal(followup.model, "gpt-6-astra");
+  assert.equal(followup.reasoningEffort, "max");
+  assert.equal(followup.modelSource, "owner_next_turn");
+  assert.equal(store.get(root.id).nextModel, null);
+  assert.equal(store.get(root.id).nextReasoningEffort, null);
+}));
+
+test("model selection updates only the earliest unclaimed queued revision", () => withStore(store => {
+  let root = store.create({
+    requestId: "queued-model-root", requesterDiscordId: "12345", requesterName: "Aedis",
+    objective: "Fix rules.", acceptanceCriteria: ["Done"], scope: [], executionMode: "draft_pr"
+  });
+  root = store.setDiscordThread(root.id, "queued-model-thread");
+  store.claim("runner-1");
+  root = store.complete(root.id, "runner-1", "ready_for_review", { provenance: { codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6" } });
+  root = store.markDelivered(root.id, root.deliveryRevision, "root-result");
+  const first = store.createFollowup({
+    requestId: "queued-model-first", requesterDiscordId: "12345", requesterName: "Aedis",
+    objective: "First", acceptanceCriteria: ["Done"], scope: [], parentJobId: root.id
+  });
+  const second = store.createFollowup({
+    requestId: "queued-model-second", requesterDiscordId: "12345", requesterName: "Aedis",
+    objective: "Second", acceptanceCriteria: ["Done"], scope: [], parentJobId: root.id
+  });
+  const selected = store.setNextRunModel(root.id, "gpt-6-astra", "max");
+  assert.equal(selected.id, first.id);
+  assert.equal(selected.modelTarget, "queued_run");
+  assert.equal(store.get(first.id).model, "gpt-6-astra");
+  assert.equal(store.get(second.id).model, "gpt-5.6-sol");
 }));

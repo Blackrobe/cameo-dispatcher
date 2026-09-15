@@ -16,13 +16,16 @@ import {
 } from "./lib.mjs";
 import { acquireRunnerLock, releaseRunnerLock } from "./runner-lock.mjs";
 import { waitForChildWithTimeout } from "./process-timeout.mjs";
+import { findActiveSessionFile } from "./session-registry.mjs";
+import { codexExecutionArgs } from "./codex-policy.mjs";
+import { ensureTemporaryArtifactIgnore, publishCandidate, reviewCandidate } from "./candidate-controller.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, "..");
 const resultSchemaPath = path.join(projectRoot, "schemas", "result.schema.json");
 
-function runGit(repoRoot, args) {
-  const result = spawnSync("git", ["-C", repoRoot, ...args], {
+function runGit(repoRoot, args, gitBin = "git") {
+  const result = spawnSync(gitBin, ["-C", repoRoot, ...args], {
     encoding: "utf8",
     windowsHide: true
   });
@@ -42,18 +45,11 @@ async function exists(filePath) {
   }
 }
 
-async function runCodex(config, worktreePath, prompt, eventPath, diagnosticPath, finalPath) {
+async function runCodex(config, job, worktreePath, prompt, eventPath, diagnosticPath, finalPath) {
   const eventStream = createWriteStream(eventPath, { flags: "wx" });
   const diagnosticStream = createWriteStream(diagnosticPath, { flags: "wx" });
-  const args = [
-    "exec",
-    "--json",
-    "--sandbox", config.sandbox,
-    "-C", worktreePath,
-    "--output-schema", resultSchemaPath,
-    "--output-last-message", finalPath,
-    prompt
-  ];
+  const args = codexExecutionArgs(job, worktreePath, resultSchemaPath, finalPath);
+  args.push(prompt);
 
   const child = spawn(config.codexBin, args, {
     cwd: worktreePath,
@@ -121,7 +117,7 @@ async function main() {
     }
 
     await mkdir(jobStateRoot, { recursive: false });
-    const baseCommit = runGit(config.repoRoot, ["rev-parse", "--verify", `${config.baseRef}^{commit}`]);
+    const baseCommit = runGit(config.repoRoot, ["rev-parse", "--verify", `${config.baseRef}^{commit}`], config.gitBin);
 
     await atomicWriteJson(statusPath, {
       requestId: job.requestId,
@@ -135,7 +131,8 @@ async function main() {
     if (await exists(worktreePath))
       throw new Error(`worktree path already exists without a completed job record: ${worktreePath}`);
 
-    runGit(config.repoRoot, ["worktree", "add", "--detach", worktreePath, baseCommit]);
+    ensureTemporaryArtifactIgnore(config.repoRoot, config.gitBin);
+    runGit(config.repoRoot, ["worktree", "add", "--detach", worktreePath, baseCommit], config.gitBin);
 
     const eventPath = path.join(jobStateRoot, "events.jsonl");
     const diagnosticPath = path.join(jobStateRoot, "diagnostics.log");
@@ -148,12 +145,17 @@ async function main() {
       baseRef: config.baseRef,
       baseCommit,
       worktreePath,
+      finalPath,
+      executionMode: job.executionMode,
+      model: job.model,
+      reasoningEffort: job.reasoningEffort,
+      modelSource: job.modelSource,
       startedAt: new Date().toISOString()
     });
 
-    const execution = await runCodex(config, worktreePath, prompt, eventPath, diagnosticPath, finalPath);
+    const execution = await runCodex(config, job, worktreePath, prompt, eventPath, diagnosticPath, finalPath);
     const { exitCode, timedOut } = execution;
-    const gitStatus = runGit(worktreePath, ["status", "--short"]);
+    let gitStatus = runGit(worktreePath, ["status", "--short"], config.gitBin);
     let finalExists = await exists(finalPath);
     let finalResult = finalExists ? await readJson(finalPath) : null;
 
@@ -179,20 +181,71 @@ async function main() {
       }
     }
     const codexThreadId = await extractCodexThreadId(eventPath);
+    const sessionFilePath = codexThreadId ? await findActiveSessionFile(codexThreadId, undefined, worktreePath) : null;
+    await atomicWriteJson(path.join(jobStateRoot, "execution-provenance.json"), {
+      codexThreadId, sessionFilePath, eventPath, diagnosticPath, finalPath,
+      exitCode, timedOut, model: job.model, reasoningEffort: job.reasoningEffort,
+      modelSource: job.modelSource, recordedAt: new Date().toISOString()
+    });
+    let reviewer = null;
+    let publication = null;
+    if (state === "ready_for_review" && job.executionMode === "read_only" && gitStatus) {
+      state = "needs_attention";
+      finalResult = {
+        status: "needs_attention",
+        summary: "The read-only job changed the isolated worktree.",
+        changedFiles: gitStatus.split(/\r?\n/), validation: [],
+        risks: ["No publication was attempted."],
+        nextAction: "Review the retained worktree and diagnostics."
+      };
+      await atomicWriteJson(finalPath, finalResult);
+    } else if (state === "ready_for_review" && job.executionMode === "draft_pr") {
+      try {
+        const reviewed = await reviewCandidate({
+          config, job, worktreePath, stateRoot: jobStateRoot, expectedHead: baseCommit, environment: process.env
+        });
+        reviewer = reviewed.review;
+        if (reviewed.candidate.paths.length > 0) {
+          publication = await publishCandidate({ config, job, worktreePath, rootStateRoot: jobStateRoot, expectedHead: baseCommit, candidate: reviewed.candidate });
+          finalResult.nextAction = `Review the draft PR: ${publication.prUrl}`;
+          await atomicWriteJson(finalPath, finalResult);
+        }
+        gitStatus = runGit(worktreePath, ["status", "--short"], config.gitBin);
+      } catch (error) {
+        state = "needs_attention";
+        resultMappingError = error.message;
+        finalResult = {
+          status: "needs_attention",
+          summary: `The edit candidate was retained but not safely published: ${error.message}`,
+          changedFiles: gitStatus ? gitStatus.split(/\r?\n/) : [],
+          validation: [], risks: ["No merge was attempted."],
+          nextAction: "Inspect the retained candidate, review artifacts, and publication state."
+        };
+        await atomicWriteJson(finalPath, finalResult);
+      }
+    }
     const completedStatus = {
       requestId: job.requestId,
       state,
       baseRef: config.baseRef,
       baseCommit,
+      headAfter: runGit(worktreePath, ["rev-parse", "HEAD"], config.gitBin),
       worktreePath,
       exitCode,
       timedOut,
       codexThreadId,
+      sessionFilePath,
       gitStatus: gitStatus === "" ? [] : gitStatus.split(/\r?\n/),
       eventPath,
       diagnosticPath,
       finalPath: finalExists ? finalPath : null,
       resultMappingError,
+      executionMode: job.executionMode,
+      model: job.model,
+      reasoningEffort: job.reasoningEffort,
+      modelSource: job.modelSource,
+      reviewer,
+      publication,
       completedAt: new Date().toISOString()
     };
     await atomicWriteJson(statusPath, completedStatus);

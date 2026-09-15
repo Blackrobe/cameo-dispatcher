@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["allowedWrite", "protectedReadBlocked", "protectedWriteBlocked", "gitMetadataWriteBlocked", "loopbackBlocked", "internetBlocked", "notes"],
+  "properties": {
+    "allowedWrite": { "type": "boolean" },
+    "protectedReadBlocked": { "type": "boolean" },
+    "protectedWriteBlocked": { "type": "boolean" },
+    "gitMetadataWriteBlocked": { "type": "boolean" },
+    "loopbackBlocked": { "type": "boolean" },
+    "internetBlocked": { "type": "boolean" },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  }
+}

@@ -3,14 +3,17 @@ import assert from "node:assert/strict";
 
 import { buildCompletion, normalizeServerJob, sanitizeWorkerEnvironment } from "../src/worker-service-lib.mjs";
 
-test("normalizes a dispatcher job without accepting policy fields", () => {
+test("normalizes the server-frozen per-run execution policy", () => {
   const normalized = normalizeServerJob({
     requestId: "discord-123456789",
     requesterName: "Aedis",
     objective: "Inspect active YAML.",
     acceptanceCriteria: ["Report findings."],
     scope: ["mods/cameo/mod.yaml"],
-    model: "attacker-selected-model",
+    executionMode: "draft_pr",
+    model: "gpt-6-astra",
+    reasoningEffort: "max",
+    modelSource: "visual_route",
     sandbox: "danger-full-access"
   });
   assert.deepEqual(normalized, {
@@ -18,7 +21,11 @@ test("normalizes a dispatcher job without accepting policy fields", () => {
     requestedBy: { human: "Aedis", tool: "Cameo Dispatcher" },
     objective: "Inspect active YAML.",
     acceptanceCriteria: ["Report findings."],
-    scope: ["mods/cameo/mod.yaml"]
+    scope: ["mods/cameo/mod.yaml"],
+    executionMode: "draft_pr",
+    model: "gpt-6-astra",
+    reasoningEffort: "max",
+    modelSource: "visual_route"
   });
 });
 
@@ -34,6 +41,34 @@ test("adds execution provenance and preserves incomplete states", () => {
   });
   assert.equal(result.state, "needs_attention");
   assert.equal(result.result.provenance.codexThreadId, "thread-1");
+});
+
+test("normalizes exact-session follow-up metadata and records its run revision", () => {
+  const normalized = normalizeServerJob({
+    requestId: "discord-followup-123456789",
+    requesterName: "Aedis",
+    objective: "Recheck the result.",
+    acceptanceCriteria: ["Report changes."],
+    scope: [],
+    runKind: "followup",
+    parentJobId: "CAM-20260915-1234ABCD",
+    rootRequestId: "discord-message-123456780",
+    runRevision: 2,
+    resumeSessionId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6"
+  });
+  assert.equal(normalized.runKind, "followup");
+  assert.equal(normalized.resumeSessionId, "01a0a275-a2f1-73f1-89ae-f94d4b983fd6");
+
+  const completion = buildCompletion({
+    state: "ready_for_review",
+    codexThreadId: normalized.resumeSessionId,
+    baseCommit: "abc123",
+    runRevision: 2,
+    parentJobId: normalized.parentJobId,
+    resultMappingError: null
+  }, { status: "completed", summary: "Done" });
+  assert.equal(completion.result.provenance.runRevision, 2);
+  assert.equal(completion.result.provenance.parentJobId, normalized.parentJobId);
 });
 
 test("maps local failures without claiming review readiness", () => {

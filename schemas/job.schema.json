@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["requestId", "objective", "acceptanceCriteria"],
+  "required": ["requestId", "objective", "acceptanceCriteria", "executionMode", "model", "reasoningEffort", "modelSource"],
   "properties": {
     "requestId": {
       "type": "string",
@@ -40,6 +40,10 @@
         "minLength": 1,
         "maxLength": 500
       }
-    }
+    },
+    "executionMode": { "type": "string", "enum": ["read_only", "draft_pr"] },
+    "model": { "type": "string", "enum": ["gpt-5.6-sol", "gpt-6-astra"] },
+    "reasoningEffort": { "type": "string", "enum": ["high", "max"] },
+    "modelSource": { "type": "string", "minLength": 1, "maxLength": 50 }
   }
 }

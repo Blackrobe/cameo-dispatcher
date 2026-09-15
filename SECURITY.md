@@ -20,3 +20,5 @@ This repository contains source and tests, not a deployable credential bundle. O
 Never commit `.env` files, real configuration, DPAPI blobs, SQLite databases, job state, transcripts, logs, worktrees, build archives, SSH keys, or Codex authentication.
 
 The reference deployment keeps the control-plane API on server loopback and reaches it through an authenticated SSH tunnel. Publication and merge authority remain outside the dispatcher.
+
+For write jobs, the SSH tunnel is closed before either the implementation model or independent reviewer starts. Codex ignores user configuration, uses the elevated Windows sandbox, has command network disabled, and loads no apps, web search, or MCP dependencies. Worktrees live on a separate ACL root from dispatcher state and credentials. Only the controller process can use GitHub credentials, and it is limited to a deterministic branch and draft PR in the configured repository. Merge is never automated.

@@ -21,7 +21,7 @@ Every job must include:
 - `acceptanceCriteria`: observable completion conditions;
 - `scope`: optional repository-relative paths.
 
-The queue adapter rejects free-form requests that cannot be normalized into this contract. It never accepts shell commands, environment variables, repository URLs, model names, sandbox modes, credentials, or publication instructions from the request payload.
+The queue adapter rejects free-form requests that cannot be normalized into this contract. It never accepts shell commands, environment variables, repository URLs, sandbox modes, credentials, or publication instructions from requester-controlled text. Model and effort overrides are separate allowlisted owner controls and are frozen per run.
 
 ## Lifecycle
 
@@ -34,9 +34,11 @@ Exceptional states are `needs_attention`, `failed`, and `cancelled`. Each transi
 - One active worker initially.
 - Each job resolves the owner-configured base ref to an exact commit before work starts.
 - Each job gets a separate detached worktree under the owner-configured worktree root.
-- Initial pilot sandbox is `read-only`. A later owner decision may allow `workspace-write` for approved task classes.
+- New tasks use the controlled `draft_pr` lane by default; an owner may choose `read_only`. The model can edit only its isolated worktree. The runner closes its dispatcher tunnel, disables external apps, web search, and MCP, and denies command network access while a model or reviewer is active.
+- Ordinary implementation and review route to GPT-5.6 Sol/high. Sprite, palette, remap, TKM, SHP, voxel, and other visual or complex work route to GPT-6 Astra/max. `/cameo-model` stores a one-shot choice for the next follow-up and never changes an active generation.
 - `danger-full-access` is not an accepted dispatcher configuration.
-- No job may commit, push, create or modify a PR, merge, launch the game, alter engine pins, contact third parties, or access credentials unless Blackrobe separately authorizes that lane.
+- Models may not commit, push, create or modify a PR, merge, launch the game, alter engine pins, contact third parties, or access credentials. After independent review, the trusted controller may commit and create or update the deterministic draft PR for the configured repository.
+- The controller cannot merge, enable auto-merge, change repository protection, force-push, or publish elsewhere. Engine paths remain blocked from the automated write lane.
 - Relevant validation output, repository status, the final response, and failure diagnostics are retained per job.
 
 ## Interfaces
@@ -48,6 +50,8 @@ Planned agent interface: narrow MCP tools named `submit_task`, `get_task`, `add_
 Both adapters submit the same schema to the same durable queue. Neither adapter owns execution policy.
 
 Conversational Discord intake does not use the privileged Message Content intent. It accepts only newly created messages whose raw content begins with the bot's immutable mention in the configured base channel, after guild, channel, author, and non-bot provenance checks. discord.js message caching is disabled. Attachments are not downloaded or accepted in this milestone; status, cancellation, pause, and resume remain deterministic slash commands.
+
+The same leading mention inside a registered bot-created job thread is a continuation only when sent by the original requester or Blackrobe. It creates a durable run revision tied to the root job, session UUID, and retained worktree. Follow-ups are deduplicated by immutable Discord message ID and run sequentially after prior delivery. The local runner must emit the same session UUID and preserve the expected worktree identity; otherwise the run becomes `needs_attention`. Unregistered threads are rejected, and automatic archive/unarchive behavior is outside the design.
 
 ## Identity and Discord presentation
 
