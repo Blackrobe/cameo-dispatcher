@@ -206,7 +206,7 @@ test("a redacted integration-role mention gets visible slash guidance instead of
     const redacted = fakeMessage({ content: "", botRoleMention: true });
     await fixture.handler(redacted);
     assert.match(redacted.replies[0].content, /redacted/);
-    assert.match(redacted.replies[0].content, /cameo-github merge/);
+    assert.match(redacted.replies[0].content, /cameo-mod merge/);
     assert.equal(fixture.store.db.prepare("SELECT count(*) count FROM jobs").get().count, 0);
 
     fixture.store.db.exec("DELETE FROM rate_limit_notices");
@@ -386,9 +386,10 @@ test("persistent admission limits bound outstanding work and rate-limit rejectio
 
 test("existing slash commands remain registered", () => {
   const names = commands.map(command => command.name);
-  for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-model", "cameo-github", "cameo-pause", "cameo-resume"])
+  for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-model", "cameo-mod", "cameo-pause", "cameo-resume"])
     assert.ok(names.includes(name));
-  const github = commands.find(command => command.name === "cameo-github");
+  assert.equal(names.includes("cameo-github"), false);
+  const github = commands.find(command => command.name === "cameo-mod");
   const merge = github.options.find(option => option.name === "merge");
   const close = github.options.find(option => option.name === "close");
   assert.deepEqual(merge.options.map(option => option.name), ["pr", "method"]);

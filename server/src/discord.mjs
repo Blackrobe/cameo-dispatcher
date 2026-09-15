@@ -88,7 +88,7 @@ export const commands = [
         { name: "Max", value: "max" }
       )),
   new SlashCommandBuilder()
-    .setName("cameo-github")
+    .setName("cameo-mod")
     .setDescription("Trusted developers: control upstream Cameo pull requests")
     .addSubcommand(subcommand => subcommand
       .setName("open")
@@ -428,7 +428,7 @@ export function createMentionHandler(config, store, client) {
       const botRole = message.mentions?.roles?.find?.(role => role.tags?.botId === client.user.id) ?? null;
       if (!message.content && botRole) {
         if (store.allowRateLimitNotice(message.author.id, 10))
-          await replyWithoutMentions(message, "Discord redacted this role-mentioned message. Use `/cameo-github merge pr:400` for the reliable structured action, or mention the Cameo Dispatcher app user after Message Content is enabled.");
+          await replyWithoutMentions(message, "Discord redacted this role-mentioned message. Use `/cameo-mod merge pr:400` for the reliable structured action, or mention the Cameo Agent app user after Message Content is enabled.");
         return;
       }
       const intakeContent = botRole
@@ -748,7 +748,7 @@ export async function startDiscord(config, store) {
         return;
       }
 
-      if (interaction.commandName === "cameo-github") {
+      if (interaction.commandName === "cameo-mod") {
         const subcommand = interaction.options.getSubcommand(true);
         const common = {
           interactionId: interaction.id,
