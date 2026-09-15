@@ -184,3 +184,33 @@ test("worker API claims and completes an exact-session follow-up as a separate r
   assert.equal(completed.deliveryState, "pending");
   assert.equal(completed.runRevision, 2);
 }));
+
+test("worker API claims and completes owner GitHub controls separately from Codex jobs", async () => withApi(async ({ store, request, getCompletionSignals }) => {
+  const action = store.createGithubAction({
+    interactionId: "1549500000000000001",
+    requesterDiscordId: "900000000000000001",
+    requesterName: "Blackrobe",
+    action: "close",
+    repository: "cameo-mod/Cameo-mod",
+    prNumber: 400,
+    expectedHeadSha: "a".repeat(40),
+    headOwner: "Blackrobe",
+    headBranch: "feature",
+    baseBranch: "master",
+    discordThreadId: "1549500000000000999"
+  });
+  const claim = await request("/v1/worker/claim", { method: "POST", body: "{}" });
+  const claimed = (await claim.json()).job;
+  assert.equal(claimed.id, action.id);
+  assert.equal(claimed.runKind, "github_action");
+  const completion = await request(`/v1/github-actions/${action.id}/result`, {
+    method: "POST",
+    body: JSON.stringify({
+      state: "ready_for_review",
+      result: { status: "completed", summary: "Closed upstream PR #400." }
+    })
+  });
+  assert.equal(completion.status, 200);
+  assert.equal((await completion.json()).job.deliveryState, "pending");
+  assert.equal(getCompletionSignals(), 1);
+}));

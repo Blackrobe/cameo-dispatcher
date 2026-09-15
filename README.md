@@ -26,7 +26,7 @@ The execution path supports read-only work and a contained edit-to-draft-PR lane
 2. The OCI bot creates a durable job and a dedicated Discord thread.
 3. The Windows runner opens an authenticated SSH loopback tunnel and claims one job, then closes that tunnel before a model or reviewer starts.
 4. Codex runs with elevated Windows sandboxing, external web/apps/MCP disabled, and no shell-command network access.
-5. Before each run, the trusted controller snapshots referenced Cameo pull requests twice and supplies stable head/base, mergeability, draft, review, and check metadata without exposing GitHub credentials.
+5. Before each run, the trusted controller snapshots referenced Cameo pull requests twice and builds an immutable per-run cache containing stable metadata, actual diffs, file names, and checks without exposing GitHub credentials. During the run, a local shim serves that cache through `gh pr view`, `gh pr diff`, `gh pr checks`, and `gh issue view` syntax.
 6. A write candidate is independently reviewed and checked for exact HEAD, path scope, size, modes, and credential-like content.
 7. The trusted controller creates or updates one deterministic draft PR; merge remains outside the dispatcher.
 8. The result returns to the same thread with job, run, model, reviewer, base, validation, risk, session, and publication provenance.
@@ -54,6 +54,7 @@ Controls remain unambiguous slash commands:
 - `/cameo-task` — structured task with explicit acceptance criteria and owner-only model, effort, and execution-mode overrides;
 - `/cameo-status` and `/cameo-cancel` — state and requester-owned queued cancellation;
 - `/cameo-model` — Blackrobe-only one-shot model and effort selection for the next follow-up in the current registered thread;
+- `/cameo-github open|merge|close` — Blackrobe-only upstream PR control with exact branch or PR/head identity;
 - `/cameo-worker` — worker and pause availability;
 - `/cameo-pause` and `/cameo-resume` — Blackrobe-only claim control.
 
@@ -63,7 +64,9 @@ An authorized leading mention inside the SQLite-registered bot-created job threa
 
 New tasks default to the draft-PR lane. Ordinary work routes to GPT-5.6 Sol at high effort. Sprite, palette, remap, TKM, SHP, voxel, and other visual work routes to GPT-6 Astra at max effort. The chosen model, effort, route, and run revision are frozen when submitted. `/cameo-model` affects only the next follow-up; it cannot mutate a generation already in progress.
 
-Agents receive authenticated read-only snapshots for referenced pull requests in `cameo-mod/Cameo-mod`; GitHub credentials remain controller-only. Direct hosted web search stays disabled in coding sessions because resumed sessions may already contain private local context. The interactive ChatGPT Browser is not available to this headless Codex CLI worker. Broader web research or website clicking requires a separate clean research/browser worker with no filesystem or credential access.
+Agents receive authenticated read-only snapshots for referenced pull requests in `cameo-mod/Cameo-mod`; GitHub credentials remain controller-only. They may use `gh pr view <number>`, `gh pr diff <number>`, `gh pr checks <number>`, and `gh issue view <number>` against an immutable cache refreshed before each run and reviewer. The shim labels the cache timestamp in the environment, rejects missing references, unsupported flags, other commands, and repository overrides, and never contacts GitHub itself. `gh api`, authentication commands, comments, reviews, PR creation, merge, and all other writes remain unavailable to the model.
+
+Owner GitHub control is separate from model authority. In a task thread, Blackrobe may send the exact mention `@Cameo Dispatcher merge this PR` or `@Cameo Dispatcher close this PR`; the controller binds the action to that delivered task publication and exact head SHA. The owner-only `/cameo-github` command can open an upstream branch-to-branch PR, merge an exact-head PR, or close one. Merge uses GitHub protections and never supplies admin bypass, auto-merge, force-push, branch deletion, or comments. Direct hosted web search stays disabled in coding sessions because resumed sessions may already contain private local context. The interactive ChatGPT Browser is not available to this headless Codex CLI worker.
 
 ## Local runner
 

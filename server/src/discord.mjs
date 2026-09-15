@@ -85,6 +85,37 @@ export const commands = [
         { name: "Max", value: "max" }
       )),
   new SlashCommandBuilder()
+    .setName("cameo-github")
+    .setDescription("Owner only: control upstream Cameo pull requests")
+    .addSubcommand(subcommand => subcommand
+      .setName("open")
+      .setDescription("Open a PR between two existing upstream branches")
+      .addStringOption(option => option.setName("head").setDescription("Upstream source branch").setRequired(true))
+      .addStringOption(option => option.setName("base").setDescription("Upstream target branch").setRequired(true))
+      .addStringOption(option => option.setName("title").setDescription("Pull request title").setRequired(true).setMaxLength(200))
+      .addBooleanOption(option => option.setName("draft").setDescription("Open as draft; defaults to yes")))
+    .addSubcommand(subcommand => subcommand
+      .setName("merge")
+      .setDescription("Merge an upstream PR only at an exact head commit")
+      .addIntegerOption(option => option.setName("pr").setDescription("Upstream PR number").setRequired(true).setMinValue(1))
+      .addStringOption(option => option.setName("expected-head").setDescription("Exact 40-character PR head commit").setRequired(true).setMinLength(40).setMaxLength(40))
+      .addStringOption(option => option.setName("head-owner").setDescription("Expected PR head repository owner").setRequired(true).setMaxLength(40))
+      .addStringOption(option => option.setName("head-branch").setDescription("Expected PR head branch").setRequired(true).setMaxLength(200))
+      .addStringOption(option => option.setName("base-branch").setDescription("Expected upstream target branch").setRequired(true).setMaxLength(200))
+      .addStringOption(option => option.setName("method").setDescription("GitHub merge method").addChoices(
+        { name: "Merge commit", value: "merge" },
+        { name: "Squash", value: "squash" },
+        { name: "Rebase", value: "rebase" }
+      )))
+    .addSubcommand(subcommand => subcommand
+      .setName("close")
+      .setDescription("Close an upstream PR without deleting its branch")
+      .addIntegerOption(option => option.setName("pr").setDescription("Upstream PR number").setRequired(true).setMinValue(1))
+      .addStringOption(option => option.setName("expected-head").setDescription("Exact 40-character PR head commit").setRequired(true).setMinLength(40).setMaxLength(40))
+      .addStringOption(option => option.setName("head-owner").setDescription("Expected PR head repository owner").setRequired(true).setMaxLength(40))
+      .addStringOption(option => option.setName("head-branch").setDescription("Expected PR head branch").setRequired(true).setMaxLength(200))
+      .addStringOption(option => option.setName("base-branch").setDescription("Expected upstream target branch").setRequired(true).setMaxLength(200))),
+  new SlashCommandBuilder()
     .setName("cameo-pause")
     .setDescription("Owner only: pause new worker claims"),
   new SlashCommandBuilder()
@@ -177,6 +208,34 @@ function controlEmbed(config, store, title) {
     )
     .setFooter({ text: "via Cameo Dispatcher · GitHub remains authoritative" })
     .setTimestamp(new Date(control.updatedAt));
+}
+
+function githubActionEmbed(action, title) {
+  const description = action.result?.summary ?? `${action.action} request accepted for the fixed upstream repository.`;
+  const fields = [
+    { name: "Action", value: action.action, inline: true },
+    { name: "Control ID", value: action.id, inline: true },
+    { name: "State", value: action.state, inline: true }
+  ];
+  if (action.prNumber)
+    fields.push({ name: "PR", value: `#${action.prNumber}`, inline: true });
+  if (action.expectedHeadSha)
+    fields.push({ name: "Expected head", value: action.expectedHeadSha, inline: false });
+  if (action.headBranch)
+    fields.push({ name: "Branches", value: `${action.headBranch} → ${action.baseBranch}`, inline: false });
+  if (Array.isArray(action.result?.validation) && action.result.validation.length)
+    fields.push({ name: "Validation", value: action.result.validation.join("\n").slice(0, 900) });
+  if (Array.isArray(action.result?.risks) && action.result.risks.length)
+    fields.push({ name: "Risks", value: action.result.risks.join("\n").slice(0, 700) });
+  if (action.result?.nextAction)
+    fields.push({ name: "GitHub", value: String(action.result.nextAction).slice(0, 700) });
+  return new EmbedBuilder()
+    .setColor(action.state === "ready_for_review" ? 0x2ecc71 : action.state === "queued" ? 0x3498db : 0xe67e22)
+    .setTitle(title)
+    .setDescription(String(description).slice(0, 1800))
+    .addFields(fields)
+    .setFooter({ text: "via Cameo Dispatcher · owner-authorized GitHub control" })
+    .setTimestamp(new Date(action.updatedAt));
 }
 
 const mentionReplyOptions = Object.freeze({ allowedMentions: { parse: [] } });
@@ -289,6 +348,11 @@ export function createMentionHandler(config, store, client) {
           await replyWithoutMentions(message, `Use /cameo-${parsed.command} job:${parsed.jobId}. Conversational messages never change dispatcher control state.`);
         return;
       }
+      if (parsed.kind === "github_task_control" && !inCandidateThread) {
+        if (store.allowRateLimitNotice(message.author.id, 10))
+          await replyWithoutMentions(message, "Use this owner control inside the registered task thread whose PR should be changed.");
+        return;
+      }
       if ((message.attachments?.size ?? 0) > 0) {
         if (store.allowRateLimitNotice(message.author.id, 10))
           await replyWithoutMentions(message, "Attachment ingestion is not enabled. Submit a text-only task, or make the required evidence available in the repository first.");
@@ -300,6 +364,26 @@ export function createMentionHandler(config, store, client) {
         if (!root) {
           if (store.allowRateLimitNotice(message.author.id, 10))
             await replyWithoutMentions(message, "This is not a registered Cameo Dispatcher job thread. Start unrelated work in #agent-office.");
+          return;
+        }
+        if (parsed.kind === "github_task_control") {
+          if (!config.adminUserIds.has(message.author.id)) {
+            if (store.allowRateLimitNotice(message.author.id, 10))
+              await replyWithoutMentions(message, "Only Blackrobe's verified Discord identity can close or merge a task PR.");
+            return;
+          }
+          const action = store.createGithubAction({
+            interactionId: message.id,
+            rootJobId: root.id,
+            requesterDiscordId: message.author.id,
+            requesterName: message.member?.displayName || message.author.globalName || message.author.username,
+            action: parsed.action,
+            repository: "cameo-mod/Cameo-mod",
+            mergeMethod: "merge",
+            discordThreadId: message.channelId
+          });
+          if (action.createDisposition === "new")
+            await message.reply({ embeds: [githubActionEmbed(action, "Owner GitHub control queued")], ...mentionReplyOptions });
           return;
         }
         if (message.author.id !== root.requesterDiscordId && !config.adminUserIds.has(message.author.id)) {
@@ -519,6 +603,41 @@ export async function startDiscord(config, store) {
         return;
       }
 
+      if (interaction.commandName === "cameo-github") {
+        if (!config.adminUserIds.has(interaction.user.id)) {
+          await interaction.reply({ content: "Only Blackrobe's verified Discord identity can control upstream PRs.", ephemeral: true });
+          return;
+        }
+        const subcommand = interaction.options.getSubcommand(true);
+        const common = {
+          interactionId: interaction.id,
+          requesterDiscordId: interaction.user.id,
+          requesterName: interaction.user.globalName || interaction.user.username,
+          action: subcommand,
+          repository: "cameo-mod/Cameo-mod",
+          discordThreadId: interaction.channelId
+        };
+        const action = subcommand === "open"
+          ? store.createGithubAction({
+            ...common,
+            headBranch: interaction.options.getString("head", true),
+            baseBranch: interaction.options.getString("base", true),
+            title: interaction.options.getString("title", true),
+            draft: interaction.options.getBoolean("draft") ?? true
+          })
+          : store.createGithubAction({
+            ...common,
+            prNumber: interaction.options.getInteger("pr", true),
+            expectedHeadSha: interaction.options.getString("expected-head", true),
+            headOwner: interaction.options.getString("head-owner", true),
+            headBranch: interaction.options.getString("head-branch", true),
+            baseBranch: interaction.options.getString("base-branch", true),
+            mergeMethod: subcommand === "merge" ? interaction.options.getString("method") ?? "merge" : null
+          });
+        await interaction.reply({ embeds: [githubActionEmbed(action, "Owner GitHub control queued")], ephemeral: true, allowedMentions: { parse: [] } });
+        return;
+      }
+
       if (interaction.commandName === "cameo-task") {
         if (interaction.channelId !== config.channelId) {
           await interaction.reply({ content: "Submit new jobs in #agent-office; use job threads for status and context.", ephemeral: true });
@@ -616,6 +735,14 @@ export async function startDiscord(config, store) {
           .addFields(resultFields(job))
           .setFooter({ text: "via Cameo Dispatcher" })
           .setTimestamp(new Date(job.updatedAt))],
+        allowedMentions: { parse: [] }
+      });
+      return message.id;
+    },
+    async publishGithubAction(action) {
+      const channel = await client.channels.fetch(action.discordThreadId);
+      const message = await channel.send({
+        embeds: [githubActionEmbed(action, `GitHub control ${action.state}`)],
         allowedMentions: { parse: [] }
       });
       return message.id;

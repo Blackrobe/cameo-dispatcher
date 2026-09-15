@@ -19,6 +19,8 @@ import { waitForChildWithTimeout } from "./process-timeout.mjs";
 import { findActiveSessionFile } from "./session-registry.mjs";
 import { codexExecutionArgs } from "./codex-policy.mjs";
 import { publishCandidate, reviewCandidate } from "./candidate-controller.mjs";
+import { startGhReadBroker } from "./gh-read-broker.mjs";
+import { sanitizeWorkerEnvironment } from "./worker-service-lib.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, "..");
@@ -62,22 +64,31 @@ async function extractCodexThreadId(eventPath) {
 }
 
 async function runCodex(config, job, worktreePath, baseCommit, eventPath, diagnosticPath, finalPath) {
-  const eventStream = createWriteStream(eventPath, { flags: "wx" });
-  const diagnosticStream = createWriteStream(diagnosticPath, { flags: "wx" });
-  const args = codexExecutionArgs(job, worktreePath, resultSchemaPath, finalPath);
-  args.push("resume", job.resumeSessionId, buildFollowupPrompt(job, baseCommit));
-  const child = spawn(config.codexBin, args, {
-    cwd: worktreePath,
-    env: process.env,
-    shell: false,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"]
+  const broker = await startGhReadBroker({
+    config, job, worktreePath,
+    auditPath: path.join(path.dirname(eventPath), "gh-broker-audit.jsonl"),
+    phase: `followup-${job.runRevision}`
   });
-  child.stdout.pipe(eventStream);
-  child.stderr.pipe(diagnosticStream);
-  const execution = await waitForChildWithTimeout(child, config.maxJobMinutes * 60 * 1000);
-  await Promise.all([finished(eventStream), finished(diagnosticStream)]);
-  return execution;
+  try {
+    const eventStream = createWriteStream(eventPath, { flags: "wx" });
+    const diagnosticStream = createWriteStream(diagnosticPath, { flags: "wx" });
+    const args = codexExecutionArgs(job, worktreePath, resultSchemaPath, finalPath);
+    args.push("resume", job.resumeSessionId, buildFollowupPrompt(job, baseCommit));
+    const child = spawn(config.codexBin, args, {
+      cwd: worktreePath,
+      env: broker.environment(sanitizeWorkerEnvironment(process.env)),
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    child.stdout.pipe(eventStream);
+    child.stderr.pipe(diagnosticStream);
+    const execution = await waitForChildWithTimeout(child, config.maxJobMinutes * 60 * 1000);
+    await Promise.all([finished(eventStream), finished(diagnosticStream)]);
+    return execution;
+  } finally {
+    await broker.stop();
+  }
 }
 
 function needsAttentionResult(message, gitStatus = [], replacementPossible = false) {
@@ -218,7 +229,7 @@ async function main() {
       try {
         const reviewed = await reviewCandidate({
           config, job, worktreePath: expectedWorktree, stateRoot: runStateRoot,
-          expectedHead: headBefore, environment: process.env
+          expectedHead: headBefore, environment: sanitizeWorkerEnvironment(process.env)
         });
         reviewer = reviewed.review;
         if (reviewed.candidate.paths.length > 0) {

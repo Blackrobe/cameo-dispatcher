@@ -16,7 +16,7 @@ export function extractReferencedPullRequests(job, maximum = 3) {
     if (numbers.length >= maximum)
       return numbers;
   }
-  const textWithoutUrls = text.replace(anyUrlPattern, " ");
+  const textWithoutUrls = text.replace(anyUrlPattern, " ").replace(/\bissue\s+#?\d{1,7}\b/gi, " ");
   shortPrPattern.lastIndex = 0;
   for (const match of textWithoutUrls.matchAll(shortPrPattern)) {
       const number = Number(match[1]);

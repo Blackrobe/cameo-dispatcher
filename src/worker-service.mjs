@@ -7,6 +7,8 @@ import { atomicWriteJson, readJson, validateFollowupJob, validateJob } from "./l
 import { buildCompletion, normalizeServerJob, sanitizeWorkerEnvironment } from "./worker-service-lib.mjs";
 import { createSshTunnel } from "./ssh-tunnel.mjs";
 import { buildGithubContext } from "./github-context.mjs";
+import { executeGithubAction } from "./github-action-controller.mjs";
+import { reconcileGithubActionOutcomes, runLockedJournaledGithubAction } from "./github-action-journal.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, "..");
@@ -65,6 +67,13 @@ async function postCompletion(job, status, finalResult) {
   await api(`/v1/jobs/${encodeURIComponent(job.id)}/result`, {
     method: "POST",
     body: JSON.stringify(completion)
+  });
+}
+
+async function postGithubControl(action, outcome) {
+  await api(`/v1/github-actions/${encodeURIComponent(action.id)}/result`, {
+    method: "POST",
+    body: JSON.stringify(outcome)
   });
 }
 
@@ -186,6 +195,8 @@ async function reconcileExisting(job) {
 }
 
 async function pollOnce() {
+  const localConfig = await readJson(localConfigPath);
+  await reconcileGithubActionOutcomes(localConfig, postGithubControl);
   const { job } = await api("/v1/worker/claim", { method: "POST", body: "{}" });
   if (!job)
     return false;
@@ -196,7 +207,24 @@ async function pollOnce() {
   }
 
   if (job.claimDisposition === "existing_running") {
+    if (job.runKind === "github_action") {
+      if (!await reconcileGithubActionOutcomes(localConfig, postGithubControl, job))
+        console.error(`GitHub action ${job.id} has an existing running claim without a retained outcome; waiting for lease reconciliation`);
+      return true;
+    }
     await reconcileExisting(job);
+    return true;
+  }
+
+  if (job.runKind === "github_action") {
+    await tunnel.stop();
+    let githubOutcome;
+    try {
+      githubOutcome = await runLockedJournaledGithubAction(localConfig, job, action => executeGithubAction(localConfig, action));
+    } finally {
+      await tunnel.start();
+    }
+    await reconcileGithubActionOutcomes(localConfig, postGithubControl, job);
     return true;
   }
 

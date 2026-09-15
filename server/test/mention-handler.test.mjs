@@ -133,7 +133,7 @@ function fakeMessage({
   return message;
 }
 
-async function createDeliveredRoot(fixture, { id = "1549300000000000001", authorId = aedisId } = {}) {
+async function createDeliveredRoot(fixture, { id = "1549300000000000001", authorId = aedisId, publication = null } = {}) {
   const source = fakeMessage({ id, authorId, content: `<@${botId}> inspect active YAML` });
   await fixture.handler(source);
   let root = fixture.store.getByRequestId(`discord-message-${id}`);
@@ -147,7 +147,8 @@ async function createDeliveredRoot(fixture, { id = "1549300000000000001", author
     nextAction: null,
     provenance: {
       codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6",
-      baseCommit: "a3a1c214a2fd3d91a42014a5d6f16e30014ec9f2"
+      baseCommit: "a3a1c214a2fd3d91a42014a5d6f16e30014ec9f2",
+      publication
     }
   });
   root = fixture.store.markDelivered(root.id, root.deliveryRevision, "discord-result-1");
@@ -348,8 +349,46 @@ test("persistent admission limits bound outstanding work and rate-limit rejectio
 
 test("existing slash commands remain registered", () => {
   const names = commands.map(command => command.name);
-  for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-model", "cameo-pause", "cameo-resume"])
+  for (const name of ["cameo-task", "cameo-status", "cameo-cancel", "cameo-worker", "cameo-model", "cameo-github", "cameo-pause", "cameo-resume"])
     assert.ok(names.includes(name));
+});
+
+test("only Blackrobe can queue an exact-head merge for the task's published PR", async () => {
+  const fixture = createFixture();
+  try {
+    const { root } = await createDeliveredRoot(fixture, {
+      id: "1549300000000000090",
+      publication: {
+        state: "published",
+        prUrl: "https://github.com/cameo-mod/Cameo-mod/pull/400",
+        lastCommit: "a".repeat(40),
+        branch: "codex/dispatcher-test"
+      }
+    });
+    const denied = fakeMessage({
+      id: "1549300000000000091", authorId: aedisId,
+      content: `<@${botId}> merge this PR`,
+      messageChannelId: root.discordThreadId, isThread: true
+    });
+    await fixture.handler(denied);
+    assert.match(denied.replies[0].content, /Only Blackrobe/);
+    assert.equal(fixture.store.db.prepare("SELECT count(*) count FROM github_actions").get().count, 0);
+
+    const authorized = fakeMessage({
+      id: "1549300000000000092", authorId: blackrobeId,
+      content: `<@${botId}> merge this PR`,
+      messageChannelId: root.discordThreadId, isThread: true
+    });
+    await fixture.handler(authorized);
+    const action = fixture.store.getGithubActionByInteractionId(authorized.id);
+    assert.equal(action.action, "merge");
+    assert.equal(action.prNumber, 400);
+    assert.equal(action.expectedHeadSha, "a".repeat(40));
+    assert.equal(action.state, "queued");
+    assert.equal(authorized.replies.length, 1);
+  } finally {
+    fixture.close();
+  }
 });
 
 test("worker result fields always display the effective model and effort", () => {

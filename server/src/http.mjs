@@ -51,10 +51,26 @@ export function createApiServer({ config, store, onCompletionReady }) {
 
       if (request.method === "POST" && url.pathname === "/v1/worker/claim") {
         await readJson(request);
-        const job = store.claim(config.runnerId, config.jobLeaseSeconds);
+        const job = store.claimGithubAction(config.runnerId, config.jobLeaseSeconds)
+          ?? store.claim(config.runnerId, config.jobLeaseSeconds);
         const busy = job?.state === "running";
         const runner = store.recordRunnerPresence(config.runnerId, busy ? "busy" : "idle", busy ? job.id : null);
         return sendJson(response, 200, { job, control: store.getControlState(), runner });
+      }
+
+      const githubResultMatch = url.pathname.match(/^\/v1\/github-actions\/([^/]+)\/result$/);
+      if (request.method === "POST" && githubResultMatch) {
+        const body = await readJson(request);
+        const completed = store.completeGithubAction(
+          decodeURIComponent(githubResultMatch[1]), config.runnerId,
+          String(body.state ?? ""), body.result ?? null,
+          body.error === undefined ? null : String(body.error)
+        );
+        if (!completed)
+          return sendJson(response, 404, { error: "GitHub action not found" });
+        store.recordRunnerPresence(config.runnerId, "idle");
+        onCompletionReady();
+        return sendJson(response, 200, { job: completed });
       }
 
       const heartbeatMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)\/heartbeat$/);

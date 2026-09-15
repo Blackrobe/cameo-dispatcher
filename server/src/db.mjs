@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 
 const terminalStates = new Set(["ready_for_review", "needs_attention", "failed", "cancelled"]);
 const requestIdPattern = /^[a-z0-9][a-z0-9._-]{2,127}$/i;
+const branchNamePattern = /^(?!\/)(?!.*\.\.)(?!.*[~^:?*\[\\\s])(?!.*\/$)(?!.*\.lock$)[A-Za-z0-9._\/-]{1,200}$/;
 
 function now() {
   return new Date().toISOString();
@@ -61,6 +62,46 @@ function parseJob(row) {
       channelId: row.source_channel_id,
       messageId: row.source_message_id
     } : null
+  };
+}
+
+function parseGithubAction(row) {
+  if (!row)
+    return null;
+  return {
+    id: row.id,
+    runKind: "github_action",
+    interactionId: row.interaction_id,
+    rootJobId: row.root_job_id ?? null,
+    requesterDiscordId: row.requester_discord_id,
+    requesterName: row.requester_name,
+    action: row.action,
+    repository: row.repository,
+    prNumber: row.pr_number,
+    prUrl: row.pr_url,
+    expectedHeadSha: row.expected_head_sha,
+    headOwner: row.head_owner,
+    headBranch: row.head_branch,
+    baseBranch: row.base_branch,
+    title: row.title,
+    draft: Boolean(row.draft),
+    mergeMethod: row.merge_method,
+    state: row.state,
+    discordThreadId: row.discord_thread_id,
+    runnerId: row.runner_id,
+    result: row.result_json ? JSON.parse(row.result_json) : null,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    claimedAt: row.claimed_at,
+    leaseExpiresAt: row.lease_expires_at,
+    completedAt: row.completed_at,
+    deliveryState: row.delivery_state,
+    deliveryRevision: row.delivery_revision,
+    deliveryAttempts: row.delivery_attempts,
+    deliveryLastError: row.delivery_last_error,
+    deliveryNextAt: row.delivery_next_at,
+    discordMessageId: row.discord_message_id
   };
 }
 
@@ -173,6 +214,41 @@ export class JobStore {
         requester_discord_id TEXT PRIMARY KEY,
         last_notified_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS github_actions (
+        id TEXT PRIMARY KEY,
+        interaction_id TEXT NOT NULL UNIQUE,
+        root_job_id TEXT REFERENCES jobs(id),
+        requester_discord_id TEXT NOT NULL,
+        requester_name TEXT NOT NULL,
+        action TEXT NOT NULL,
+        repository TEXT NOT NULL,
+        pr_number INTEGER,
+        pr_url TEXT,
+        expected_head_sha TEXT,
+        head_owner TEXT,
+        head_branch TEXT,
+        base_branch TEXT,
+        title TEXT,
+        draft INTEGER NOT NULL DEFAULT 1,
+        merge_method TEXT,
+        state TEXT NOT NULL,
+        discord_thread_id TEXT NOT NULL,
+        runner_id TEXT,
+        lease_expires_at TEXT,
+        result_json TEXT,
+        error TEXT,
+        delivery_state TEXT NOT NULL DEFAULT 'not_ready',
+        delivery_revision INTEGER NOT NULL DEFAULT 0,
+        delivery_attempts INTEGER NOT NULL DEFAULT 0,
+        delivery_last_error TEXT,
+        delivery_next_at TEXT,
+        discord_message_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        claimed_at TEXT,
+        completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS github_actions_state_created_idx ON github_actions(state, created_at);
     `);
     this.db.prepare(`
       INSERT OR IGNORE INTO control_state (id, paused, updated_at, updated_by)
@@ -207,6 +283,187 @@ export class JobStore {
         ON jobs(parent_job_id, run_revision) WHERE parent_job_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS jobs_discord_thread_idx ON jobs(discord_thread_id);
     `);
+    const actionColumns = new Set(this.db.prepare("PRAGMA table_info(github_actions)").all().map(row => row.name));
+    if (!actionColumns.has("head_owner"))
+      this.db.exec("ALTER TABLE github_actions ADD COLUMN head_owner TEXT");
+  }
+
+  createGithubAction(input) {
+    if (!/^[0-9]{5,30}$/.test(input.interactionId ?? ""))
+      throw new Error("GitHub action interaction ID is invalid");
+    if (!/^[0-9]{5,30}$/.test(input.requesterDiscordId ?? "") || typeof input.requesterName !== "string" || !input.requesterName.trim())
+      throw new Error("GitHub action requester is invalid");
+    if (!new Set(["open", "close", "merge"]).has(input.action))
+      throw new Error("GitHub action is invalid");
+    if (input.repository !== "cameo-mod/Cameo-mod")
+      throw new Error("GitHub action repository is not allowlisted");
+    if (typeof input.discordThreadId !== "string" || !/^[0-9]{5,30}$/.test(input.discordThreadId))
+      throw new Error("GitHub action Discord destination is invalid");
+    const existingInteraction = this.getGithubActionByInteractionId(input.interactionId);
+    if (existingInteraction)
+      return { ...existingInteraction, createDisposition: "existing" };
+
+    let resolved = { ...input };
+    if (input.rootJobId) {
+      const root = this.get(input.rootJobId);
+      if (!root || root.parentJobId)
+        throw new Error("GitHub action root job is unavailable");
+      const published = this.getLatestRun(root.id);
+      const publication = published?.result?.provenance?.publication;
+      if (!published || published.state !== "ready_for_review" || published.deliveryState !== "delivered")
+        throw new Error("The latest task run must be completed and delivered before controlling its PR");
+      if (!publication || !/^https:\/\/github\.com\/cameo-mod\/Cameo-mod\/pull\/\d+$/i.test(publication.prUrl ?? "")
+        || !/^[0-9a-f]{40}$/i.test(publication.lastCommit ?? ""))
+        throw new Error("This task has no verified published Cameo PR");
+      resolved = {
+        ...resolved,
+        prNumber: Number(publication.prUrl.match(/\/pull\/(\d+)$/i)[1]),
+        prUrl: publication.prUrl,
+        expectedHeadSha: publication.lastCommit,
+        headOwner: "Blackrobe",
+        headBranch: publication.branch,
+        baseBranch: "master",
+        discordThreadId: root.discordThreadId
+      };
+    }
+
+    if (["close", "merge"].includes(resolved.action)) {
+      if (!Number.isInteger(resolved.prNumber) || resolved.prNumber < 1 || resolved.prNumber > 9_999_999)
+        throw new Error("GitHub action PR number is invalid");
+      if (!/^[0-9a-f]{40}$/i.test(resolved.expectedHeadSha ?? ""))
+        throw new Error("GitHub action expected head SHA is invalid");
+      if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(resolved.headOwner ?? "")
+        || !branchNamePattern.test(resolved.headBranch ?? "") || !branchNamePattern.test(resolved.baseBranch ?? ""))
+        throw new Error("GitHub action expected PR identity is invalid");
+    }
+    if (resolved.action === "merge" && !new Set(["merge", "squash", "rebase"]).has(resolved.mergeMethod ?? "merge"))
+      throw new Error("GitHub merge method is invalid");
+    if (resolved.action === "open") {
+      if (!branchNamePattern.test(resolved.headBranch ?? "") || !branchNamePattern.test(resolved.baseBranch ?? "") || resolved.headBranch === resolved.baseBranch)
+        throw new Error("GitHub action branches are invalid");
+      if (typeof resolved.title !== "string" || !resolved.title.trim() || resolved.title.length > 200)
+        throw new Error("GitHub action title is invalid");
+    }
+
+    const conflicting = resolved.action === "open"
+      ? this.db.prepare("SELECT id FROM github_actions WHERE repository = ? AND head_branch = ? AND base_branch = ? AND state IN ('queued', 'running') LIMIT 1")
+        .get(resolved.repository, resolved.headBranch, resolved.baseBranch)
+      : this.db.prepare("SELECT id FROM github_actions WHERE repository = ? AND pr_number = ? AND state IN ('queued', 'running') LIMIT 1")
+        .get(resolved.repository, resolved.prNumber);
+    if (conflicting)
+      throw new Error(`A GitHub control for the same target is already active: ${conflicting.id}`);
+
+    const timestamp = now();
+    const id = `CGA-${timestamp.slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
+    try {
+      this.db.prepare(`
+        INSERT INTO github_actions (
+          id, interaction_id, root_job_id, requester_discord_id, requester_name,
+          action, repository, pr_number, pr_url, expected_head_sha, head_owner, head_branch,
+          base_branch, title, draft, merge_method, state, discord_thread_id,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+      `).run(
+        id, resolved.interactionId, resolved.rootJobId ?? null,
+        resolved.requesterDiscordId, resolved.requesterName.trim(), resolved.action,
+        resolved.repository, resolved.prNumber ?? null, resolved.prUrl ?? null,
+        resolved.expectedHeadSha ?? null, resolved.headOwner ?? null, resolved.headBranch ?? null,
+        resolved.baseBranch ?? null, resolved.title?.trim() ?? null,
+        resolved.draft === false ? 0 : 1, resolved.mergeMethod ?? "merge",
+        resolved.discordThreadId, timestamp, timestamp
+      );
+    } catch (error) {
+      if (String(error.message).includes("UNIQUE constraint failed: github_actions.interaction_id"))
+        return { ...this.getGithubActionByInteractionId(resolved.interactionId), createDisposition: "existing" };
+      throw error;
+    }
+    return { ...this.getGithubAction(id), createDisposition: "new" };
+  }
+
+  getGithubAction(id) {
+    return parseGithubAction(this.db.prepare("SELECT * FROM github_actions WHERE id = ?").get(id));
+  }
+
+  getGithubActionByInteractionId(interactionId) {
+    return parseGithubAction(this.db.prepare("SELECT * FROM github_actions WHERE interaction_id = ?").get(interactionId));
+  }
+
+  claimGithubAction(runnerId, leaseSeconds = 300) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const runningJob = this.db.prepare("SELECT id FROM jobs WHERE state = 'running' LIMIT 1").get();
+      if (runningJob) {
+        this.db.exec("COMMIT");
+        return null;
+      }
+      const running = this.db.prepare("SELECT * FROM github_actions WHERE state = 'running' ORDER BY claimed_at LIMIT 1").get();
+      if (running) {
+        const parsed = parseGithubAction(running);
+        if (parsed.leaseExpiresAt && parsed.leaseExpiresAt <= now()) {
+          const timestamp = now();
+          this.db.prepare(`UPDATE github_actions SET state = 'needs_attention', error = ?, completed_at = ?, updated_at = ?, delivery_state = 'pending', delivery_revision = delivery_revision + 1, delivery_next_at = ? WHERE id = ? AND state = 'running'`)
+            .run("Runner lease expired; reconcile GitHub state before retrying this action.", timestamp, timestamp, timestamp, parsed.id);
+          this.db.exec("COMMIT");
+          return null;
+        }
+        this.db.exec("COMMIT");
+        return { ...parsed, claimDisposition: "existing_running" };
+      }
+      if (this.getControlState().paused) {
+        this.db.exec("COMMIT");
+        return null;
+      }
+      const row = this.db.prepare("SELECT id FROM github_actions WHERE state = 'queued' ORDER BY created_at LIMIT 1").get();
+      if (!row) {
+        this.db.exec("COMMIT");
+        return null;
+      }
+      const timestamp = now();
+      this.db.prepare("UPDATE github_actions SET state = 'running', runner_id = ?, claimed_at = ?, lease_expires_at = ?, updated_at = ? WHERE id = ? AND state = 'queued'")
+        .run(runnerId, timestamp, leaseDeadline(leaseSeconds), timestamp, row.id);
+      this.db.exec("COMMIT");
+      return { ...this.getGithubAction(row.id), claimDisposition: "new" };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  completeGithubAction(id, runnerId, state, result, error = null) {
+    if (!new Set(["ready_for_review", "needs_attention", "failed"]).has(state))
+      throw new Error("GitHub action result state is invalid");
+    const action = this.getGithubAction(id);
+    if (!action)
+      return null;
+    const recoverableExpiredClaim = action.state === "needs_attention" && action.result === null && action.runnerId === runnerId;
+    if (["ready_for_review", "needs_attention", "failed"].includes(action.state) && action.runnerId === runnerId) {
+      if (!recoverableExpiredClaim)
+        return { ...action, completionDisposition: "existing" };
+    }
+    if (!recoverableExpiredClaim && (action.state !== "running" || action.runnerId !== runnerId))
+      throw new Error("GitHub action is not owned by this runner");
+    const timestamp = now();
+    this.db.prepare(`UPDATE github_actions SET state = ?, result_json = ?, error = ?, completed_at = ?, updated_at = ?, delivery_state = 'pending', delivery_revision = delivery_revision + 1, delivery_attempts = 0, delivery_next_at = ?, delivery_last_error = NULL WHERE id = ?`)
+      .run(state, result === null ? null : JSON.stringify(result), error, timestamp, timestamp, timestamp, id);
+    return { ...this.getGithubAction(id), completionDisposition: "new" };
+  }
+
+  listPendingGithubActionDeliveries(limit = 10) {
+    return this.db.prepare(`SELECT * FROM github_actions WHERE delivery_state IN ('pending', 'failed') AND (delivery_next_at IS NULL OR delivery_next_at <= ?) ORDER BY updated_at LIMIT ?`)
+      .all(now(), limit).map(parseGithubAction);
+  }
+
+  markGithubActionDelivered(id, revision, messageId) {
+    this.db.prepare("UPDATE github_actions SET delivery_state = 'delivered', discord_message_id = ?, delivery_last_error = NULL, delivery_next_at = NULL, updated_at = ? WHERE id = ? AND delivery_revision = ?")
+      .run(messageId ?? null, now(), id, revision);
+    return this.getGithubAction(id);
+  }
+
+  markGithubActionDeliveryFailed(id, revision, error, retryAfterMs = 10000) {
+    const next = new Date(Date.now() + Math.max(1000, retryAfterMs)).toISOString();
+    this.db.prepare("UPDATE github_actions SET delivery_state = 'failed', delivery_attempts = delivery_attempts + 1, delivery_last_error = ?, delivery_next_at = ?, updated_at = ? WHERE id = ? AND delivery_revision = ?")
+      .run(String(error), next, now(), id, revision);
+    return this.getGithubAction(id);
   }
 
   getControlState() {
@@ -657,6 +914,11 @@ export class JobStore {
   claim(runnerId, leaseSeconds = 300) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const runningAction = this.db.prepare("SELECT id FROM github_actions WHERE state = 'running' LIMIT 1").get();
+      if (runningAction) {
+        this.db.exec("COMMIT");
+        return null;
+      }
       const running = this.db.prepare("SELECT * FROM jobs WHERE state = 'running' ORDER BY claimed_at LIMIT 1").get();
       if (running) {
         const parsed = parseJob(running);

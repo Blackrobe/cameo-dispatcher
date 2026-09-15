@@ -356,3 +356,91 @@ test("lease expiry blocks already queued dependent follow-ups", () => withStore(
   assert.equal(store.get(run3.id).state, "needs_attention");
   assert.equal(store.claim("runner-1"), null);
 }));
+
+test("owner GitHub controls bind a task PR to its delivered publication and serialize with jobs", () => withStore(store => {
+  let root = createQueued(store, "github-control");
+  store.claim("runner-1");
+  root = store.complete(root.id, "runner-1", "ready_for_review", {
+    status: "completed",
+    provenance: {
+      codexThreadId: "01a0a275-a2f1-73f1-89ae-f94d4b983fd6",
+      publication: {
+        state: "published",
+        prUrl: "https://github.com/cameo-mod/Cameo-mod/pull/400",
+        lastCommit: "a".repeat(40),
+        branch: "codex/dispatcher-test"
+      }
+    }
+  });
+  root = store.markDelivered(root.id, root.deliveryRevision, "result-message");
+  store.db.prepare("UPDATE jobs SET discord_thread_id = ? WHERE id = ?").run("1549400000000000998", root.id);
+  root = store.get(root.id);
+  const queuedJob = createQueued(store, "blocked-by-github-control");
+  const input = {
+    interactionId: "1549400000000000001",
+    rootJobId: root.id,
+    requesterDiscordId: "12345",
+    requesterName: "Blackrobe",
+    action: "merge",
+    repository: "cameo-mod/Cameo-mod",
+    mergeMethod: "merge",
+    discordThreadId: root.discordThreadId
+  };
+  const created = store.createGithubAction(input);
+  assert.equal(created.prNumber, 400);
+  assert.equal(created.expectedHeadSha, "a".repeat(40));
+  assert.equal(store.createGithubAction(input).id, created.id);
+  const claimed = store.claimGithubAction("runner-1");
+  assert.equal(claimed.id, created.id);
+  assert.equal(claimed.runKind, "github_action");
+  assert.equal(store.claim("runner-1"), null);
+  const completed = store.completeGithubAction(created.id, "runner-1", "ready_for_review", {
+    status: "completed", summary: "Merged upstream PR #400."
+  });
+  assert.equal(completed.deliveryState, "pending");
+  assert.equal(store.listPendingGithubActionDeliveries()[0].id, created.id);
+  assert.equal(store.markGithubActionDelivered(created.id, completed.deliveryRevision, "github-result").deliveryState, "delivered");
+  assert.equal(store.claim("runner-1").id, queuedJob.id);
+}));
+
+test("upstream branch PR controls reject foreign repositories and unsafe branches", () => withStore(store => {
+  const common = {
+    interactionId: "1549400000000000002",
+    requesterDiscordId: "12345",
+    requesterName: "Blackrobe",
+    action: "open",
+    repository: "cameo-mod/Cameo-mod",
+    headBranch: "feature/one",
+    baseBranch: "release",
+    title: "Merge feature into release",
+    discordThreadId: "1549400000000000999"
+  };
+  assert.equal(store.createGithubAction(common).state, "queued");
+  assert.throws(() => store.createGithubAction({ ...common, interactionId: "1549400000000000003", repository: "foreign/repo" }), /not allowlisted/);
+  assert.throws(() => store.createGithubAction({ ...common, interactionId: "1549400000000000004", headBranch: "../master" }), /branches are invalid/);
+}));
+
+test("an expired GitHub action accepts its retained late result without replay", () => withStore(store => {
+  const action = store.createGithubAction({
+    interactionId: "1549400000000000010",
+    requesterDiscordId: "12345",
+    requesterName: "Blackrobe",
+    action: "close",
+    repository: "cameo-mod/Cameo-mod",
+    prNumber: 400,
+    expectedHeadSha: "a".repeat(40),
+    headOwner: "Blackrobe",
+    headBranch: "feature",
+    baseBranch: "master",
+    discordThreadId: "1549400000000000999"
+  });
+  store.claimGithubAction("runner-1");
+  store.db.prepare("UPDATE github_actions SET lease_expires_at = ? WHERE id = ?").run("2000-01-01T00:00:00.000Z", action.id);
+  assert.equal(store.claimGithubAction("runner-1"), null);
+  assert.equal(store.getGithubAction(action.id).state, "needs_attention");
+  const recovered = store.completeGithubAction(action.id, "runner-1", "ready_for_review", {
+    status: "completed", summary: "Closed upstream PR #400."
+  });
+  assert.equal(recovered.state, "ready_for_review");
+  assert.equal(recovered.result.summary, "Closed upstream PR #400.");
+}));

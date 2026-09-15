@@ -14,6 +14,14 @@ async function deliverPending() {
     return;
   deliveryRunning = true;
   try {
+    for (const action of store.listPendingGithubActionDeliveries()) {
+      try {
+        const messageId = await discord.publishGithubAction(action);
+        store.markGithubActionDelivered(action.id, action.deliveryRevision, messageId);
+      } catch (error) {
+        store.markGithubActionDeliveryFailed(action.id, action.deliveryRevision, error.message, error.retryAfterMs);
+      }
+    }
     for (const job of store.listPendingDeliveries()) {
       try {
         const messageId = await discord.publishJob(job);
