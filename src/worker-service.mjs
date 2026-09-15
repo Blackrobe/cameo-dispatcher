@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { atomicWriteJson, readJson, validateFollowupJob, validateJob } from "./lib.mjs";
 import { buildCompletion, normalizeServerJob, sanitizeWorkerEnvironment } from "./worker-service-lib.mjs";
 import { createSshTunnel } from "./ssh-tunnel.mjs";
+import { buildGithubContext } from "./github-context.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, "..");
@@ -75,10 +76,14 @@ function statusPathFor(localConfig, job) {
 
 async function runLocalJob(job) {
   const serverJob = normalizeServerJob(job);
-  const normalized = serverJob.runKind === "followup"
-    ? validateFollowupJob(serverJob)
-    : validateJob(serverJob);
   const localConfig = await readJson(localConfigPath);
+  const enrichedJob = {
+    ...serverJob,
+    controllerContext: buildGithubContext(localConfig, serverJob)
+  };
+  const normalized = enrichedJob.runKind === "followup"
+    ? validateFollowupJob(enrichedJob)
+    : validateJob(enrichedJob);
   const incomingPath = path.join(localConfig.stateRoot, "incoming", `${normalized.requestId}.json`);
   await atomicWriteJson(incomingPath, normalized);
 

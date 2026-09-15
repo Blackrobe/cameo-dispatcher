@@ -34,7 +34,9 @@ Exceptional states are `needs_attention`, `failed`, and `cancelled`. Each transi
 - One active worker initially.
 - Each job resolves the owner-configured base ref to an exact commit before work starts.
 - Each job gets a separate detached worktree under the owner-configured worktree root.
-- New tasks use the controlled `draft_pr` lane by default; an owner may choose `read_only`. The model can edit only its isolated worktree. The runner closes its dispatcher tunnel, disables external apps, web search, and MCP, and denies command network access while a model or reviewer is active.
+- New tasks use the controlled `draft_pr` lane by default; an owner may choose `read_only`. The model can edit only its isolated worktree. The runner closes its dispatcher tunnel, disables external apps and MCP, and denies shell-command network access while a model or reviewer is active.
+- Hosted web search remains disabled in coding sessions. A separate clean research context is required before public web access can be enabled without exposing retained private context.
+- The controller performs authenticated, bounded, stable double reads for referenced Cameo pull requests and gives the model selected metadata without credentials. The snapshot is metadata-only and does not replace diff or review-discussion inspection. Interactive Browser automation is not part of the headless CLI worker.
 - Ordinary implementation and review route to GPT-5.6 Sol/high. Sprite, palette, remap, TKM, SHP, voxel, and other visual or complex work route to GPT-6 Astra/max. `/cameo-model` stores a one-shot choice for the next follow-up and never changes an active generation.
 - `danger-full-access` is not an accepted dispatcher configuration.
 - Models may not commit, push, create or modify a PR, merge, launch the game, alter engine pins, contact third parties, or access credentials. After independent review, the trusted controller may commit and create or update the deterministic draft PR for the configured repository.

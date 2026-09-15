@@ -21,4 +21,6 @@ Never commit `.env` files, real configuration, DPAPI blobs, SQLite databases, jo
 
 The reference deployment keeps the control-plane API on server loopback and reaches it through an authenticated SSH tunnel. Publication and merge authority remain outside the dispatcher.
 
-For write jobs, the SSH tunnel is closed before either the implementation model or independent reviewer starts. Codex ignores user configuration, uses the elevated Windows sandbox, has command network disabled, and loads no apps, web search, or MCP dependencies. Worktrees live on a separate ACL root from dispatcher state and credentials. Only the controller process can use GitHub credentials, and it is limited to a deterministic branch and draft PR in the configured repository. Merge is never automated.
+For write jobs, the SSH tunnel is closed before either the implementation model or independent reviewer starts. Codex ignores user configuration, uses the elevated Windows sandbox, has shell-command network and hosted web search disabled, and loads no apps or MCP dependencies. Worktrees live on a separate ACL root from dispatcher state and credentials.
+
+Only the controller process can use GitHub credentials. It performs bounded, stable double-read snapshots for referenced pull requests and passes selected metadata—not PR diffs or review discussion—to the model. Model-side GitHub writes remain unavailable. Controller publication is limited to a deterministic branch and draft PR in the configured repository. Merge is never automated.

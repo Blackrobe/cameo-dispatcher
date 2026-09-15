@@ -44,6 +44,11 @@
     "executionMode": { "type": "string", "enum": ["read_only", "draft_pr"] },
     "model": { "type": "string", "enum": ["gpt-5.6-sol", "gpt-6-astra"] },
     "reasoningEffort": { "type": "string", "enum": ["high", "max"] },
-    "modelSource": { "type": "string", "minLength": 1, "maxLength": 50 }
+    "modelSource": { "type": "string", "minLength": 1, "maxLength": 50 },
+    "controllerContext": {
+      "type": "array",
+      "maxItems": 5,
+      "items": { "type": "string", "minLength": 1, "maxLength": 8000 }
+    }
   }
 }

@@ -10,7 +10,7 @@ The planned authority and interface boundary is defined in `docs/dispatch-contra
 
 ## Safety boundary
 
-- The dispatcher configuration fixes the repository, base ref, worktree root, state root, Codex executable, and sandbox. A requester cannot override them.
+- The dispatcher configuration fixes the repository, base ref, worktree root, state root, Codex executable, sandbox, GitHub repository, and controller credentials. A requester cannot override them.
 - Request payloads contain only an objective, acceptance criteria, repository-relative scope, identity metadata, and an idempotent request ID.
 - A single exclusive runner lock prevents concurrent workers.
 - Every job gets a detached worktree at an exact resolved base commit.
@@ -25,10 +25,11 @@ The execution path supports read-only work and a contained edit-to-draft-PR lane
 1. An allowlisted Discord user submits `/cameo-task` in the private `#agent-office` channel.
 2. The OCI bot creates a durable job and a dedicated Discord thread.
 3. The Windows runner opens an authenticated SSH loopback tunnel and claims one job, then closes that tunnel before a model or reviewer starts.
-4. Codex runs with elevated Windows sandboxing, external apps/web/MCP disabled, and no command network access.
-5. A write candidate is independently reviewed and checked for exact HEAD, path scope, size, modes, and credential-like content.
-6. The trusted controller creates or updates one deterministic draft PR; merge remains outside the dispatcher.
-7. The result returns to the same thread with job, run, model, reviewer, base, validation, risk, session, and publication provenance.
+4. Codex runs with elevated Windows sandboxing, external web/apps/MCP disabled, and no shell-command network access.
+5. Before each run, the trusted controller snapshots referenced Cameo pull requests twice and supplies stable head/base, mergeability, draft, review, and check metadata without exposing GitHub credentials.
+6. A write candidate is independently reviewed and checked for exact HEAD, path scope, size, modes, and credential-like content.
+7. The trusted controller creates or updates one deterministic draft PR; merge remains outside the dispatcher.
+8. The result returns to the same thread with job, run, model, reviewer, base, validation, risk, session, and publication provenance.
 
 Mention-only intake has separately passed a queue-only production smoke: one `@Cameo Dispatcher` source message created one sourced job, acknowledgement, and bot-owned thread; status and cancellation persisted without starting Codex or creating a worktree. Its first real Aedis-submitted execution remains a pilot gate.
 
@@ -61,6 +62,8 @@ Controls remain unambiguous slash commands:
 An authorized leading mention inside the SQLite-registered bot-created job thread creates a versioned follow-up run instead of a new root job. The original requester or a dispatcher owner may continue the job. The Windows runner verifies the dispatcher-owned root record, exact session UUID, retained worktree, base commit, clean status, and emitted resume UUID before accepting the result. Concurrent follow-ups are queued and executed in revision order, with each revision retaining its own events, diagnostics, final result, and Discord delivery record. Missing or conflicting local state becomes `needs_attention`; no replacement session or worktree is created. Automatic session archiving is intentionally not used.
 
 New tasks default to the draft-PR lane. Ordinary work routes to GPT-5.6 Sol at high effort. Sprite, palette, remap, TKM, SHP, voxel, and other visual work routes to GPT-6 Astra at max effort. The chosen model, effort, route, and run revision are frozen when submitted. `/cameo-model` affects only the next follow-up; it cannot mutate a generation already in progress.
+
+Agents receive authenticated read-only snapshots for referenced pull requests in `cameo-mod/Cameo-mod`; GitHub credentials remain controller-only. Direct hosted web search stays disabled in coding sessions because resumed sessions may already contain private local context. The interactive ChatGPT Browser is not available to this headless Codex CLI worker. Broader web research or website clicking requires a separate clean research/browser worker with no filesystem or credential access.
 
 ## Local runner
 
