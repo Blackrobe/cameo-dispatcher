@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { commands, createMentionHandler, createSlashJob, recoverMentionProvisioning, resultFields } from "../src/discord.mjs";
+import { acceptGithubProposal, commands, createMentionHandler, createSlashJob, fetchGithubProposal, githubProposalCustomId, parseGithubProposalCustomId, recoverMentionProvisioning, resultFields } from "../src/discord.mjs";
 import { AdmissionError, JobStore } from "../src/db.mjs";
 import { defaultMentionAcceptance } from "../src/mention-intake.mjs";
 
@@ -21,6 +21,12 @@ function createFixture() {
     guildId,
     channelId,
     runnerId: "blackrobe-windows-1",
+    runnerToken: "proposal-signing-test-token",
+    githubProposalFetcher: async prNumber => ({
+      prNumber, prUrl: `https://github.com/cameo-mod/Cameo-mod/pull/${prNumber}`,
+      state: "open", draft: true, expectedHeadSha: "a".repeat(40),
+      headOwner: "Blackrobe", headBranch: "codex/dispatcher-test", baseBranch: "master"
+    }),
     allowedUserIds: new Set([blackrobeId, aedisId]),
     adminUserIds: new Set([blackrobeId])
   };
@@ -353,7 +359,33 @@ test("existing slash commands remain registered", () => {
     assert.ok(names.includes(name));
 });
 
-test("both trusted developers can queue a bound merge for the task PR", async () => {
+test("GitHub proposals use a validated public PR identity", async () => {
+  const proposal = await fetchGithubProposal(400, async () => ({
+    ok: true,
+    async json() {
+      return {
+        number: 400, html_url: "https://github.com/cameo-mod/Cameo-mod/pull/400",
+        state: "open", draft: true,
+        head: { sha: "a".repeat(40), ref: "feature", repo: { owner: { login: "Blackrobe" } } },
+        base: { ref: "master", repo: { full_name: "cameo-mod/Cameo-mod" } }
+      };
+    }
+  }));
+  assert.equal(proposal.expectedHeadSha, "a".repeat(40));
+  assert.equal(proposal.baseBranch, "master");
+  await assert.rejects(() => fetchGithubProposal(400, async () => ({
+    ok: true,
+    async json() {
+      return {
+        number: 400,
+        head: { sha: "a".repeat(40), ref: "feature", repo: { owner: { login: "Blackrobe" } } },
+        base: { ref: "master", repo: { full_name: "foreign/repo" } }
+      };
+    }
+  })), /invalid PR identity/);
+});
+
+test("natural merge language proposes an action and only a trusted button acceptance queues it", async () => {
   const fixture = createFixture();
   try {
     const { root } = await createDeliveredRoot(fixture, {
@@ -371,23 +403,38 @@ test("both trusted developers can queue a bound merge for the task PR", async ()
       messageChannelId: root.discordThreadId, isThread: true
     });
     await fixture.handler(aedis);
-    const aedisAction = fixture.store.getGithubActionByInteractionId(aedis.id);
-    assert.equal(aedisAction.requesterDiscordId, aedisId);
-    assert.equal(aedisAction.prNumber, 400);
-    fixture.store.db.prepare("UPDATE github_actions SET state = 'ready_for_review' WHERE id = ?").run(aedisAction.id);
-
-    const authorized = fakeMessage({
-      id: "1549300000000000092", authorId: blackrobeId,
-      content: `<@${botId}> please merge PR #400`,
-      messageChannelId: root.discordThreadId, isThread: true
-    });
-    await fixture.handler(authorized);
-    const action = fixture.store.getGithubActionByInteractionId(authorized.id);
+    assert.equal(fixture.store.getGithubActionByInteractionId(aedis.id), null);
+    const followup = fixture.store.getByRequestId(`discord-followup-${aedis.id}`);
+    assert.equal(followup.state, "queued");
+    assert.match(aedis.replies[0].content, /Nothing will change on GitHub unless/);
+    assert.equal(aedis.replies[0].components.length, 1);
+    const proposal = {
+      action: "merge", prNumber: 400, rootJobId: root.id,
+      sourceMessageId: aedis.id, discordThreadId: root.discordThreadId,
+      expectedHeadSha: "a".repeat(40), headOwner: "Blackrobe",
+      headBranch: "codex/dispatcher-test", baseBranch: "master"
+    };
+    const customId = githubProposalCustomId(fixture.config, proposal);
+    assert.ok(customId.length <= 100);
+    const parsedProposal = parseGithubProposalCustomId(fixture.config, customId);
+    assert.equal(parsedProposal.action, "merge");
+    assert.equal(parsedProposal.prNumber, 400);
+    assert.equal(parsedProposal.sourceMessageId, aedis.id);
+    assert.match(parsedProposal.proposalIdentityDigest, /^[A-Za-z0-9_-]{22}$/);
+    assert.equal(parseGithubProposalCustomId(fixture.config, `${customId.slice(0, -1)}x`), null);
+    const action = acceptGithubProposal(fixture.config, fixture.store, {
+      id: aedisId, globalName: "Aedis", username: "aedis"
+    }, { ...proposal, expectedHeadSha: undefined, proposalIdentityDigest: parsedProposal.proposalIdentityDigest });
     assert.equal(action.action, "merge");
     assert.equal(action.prNumber, 400);
-    assert.equal(action.expectedHeadSha, "a".repeat(40));
+    assert.equal(action.expectedHeadSha, null);
+    assert.equal(action.proposalIdentityDigest, parsedProposal.proposalIdentityDigest);
+    assert.equal(action.requesterDiscordId, aedisId);
     assert.equal(action.state, "queued");
-    assert.equal(authorized.replies.length, 1);
+    assert.equal(fixture.store.getByRequestId(`discord-followup-${aedis.id}`).state, "cancelled");
+    assert.throws(() => acceptGithubProposal(fixture.config, fixture.store, {
+      id: "900000000000009999", username: "intruder"
+    }, { ...proposal, sourceMessageId: "1549300000000000092" }), /trusted developer/);
 
     const mismatch = fakeMessage({
       id: "1549300000000000093", authorId: blackrobeId,

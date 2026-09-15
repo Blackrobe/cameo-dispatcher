@@ -34,6 +34,7 @@ export function githubActionIntent(action) {
     prNumber: action.prNumber ?? null,
     prUrl: action.prUrl ?? null,
     expectedHeadSha: action.expectedHeadSha ?? null,
+    proposalIdentityDigest: action.proposalIdentityDigest ?? null,
     headOwner: action.headOwner ?? null,
     headBranch: action.headBranch ?? null,
     baseBranch: action.baseBranch ?? null,

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 const fixedRepository = "cameo-mod/Cameo-mod";
@@ -47,8 +48,11 @@ function assertAction(config, action) {
     if (!Number.isInteger(action.prNumber) || action.prNumber < 1 || action.prNumber > 9_999_999)
       throw new Error("pull request number is invalid");
     const supplied = [action.expectedHeadSha, action.headOwner, action.headBranch, action.baseBranch].some(Boolean);
-    if (supplied && (!headShaPattern.test(action.expectedHeadSha ?? "") || !action.headOwner || !action.headBranch || !action.baseBranch))
-      throw new Error("expected pull request identity is incomplete or invalid");
+    const fullIdentity = [action.headOwner, action.headBranch, action.baseBranch].every(Boolean);
+    if (supplied && !headShaPattern.test(action.expectedHeadSha ?? ""))
+      throw new Error("expected pull request head SHA is invalid");
+    if (supplied && !fullIdentity && !action.rootJobId)
+      throw new Error("partial pull request identity is allowed only for a trusted task proposal");
     if (!supplied && !action.rootJobId)
       throw new Error("unresolved pull request identity is allowed only for an owner task-thread action");
   }
@@ -73,17 +77,28 @@ function assertPrIdentity(pr, action) {
     throw new Error("pull request head repository, head branch, or base branch differs from the owner-authorized identity");
 }
 
+function proposalIdentityDigest(pr) {
+  return createHash("sha256").update(JSON.stringify([
+    pr.number, pr.headRefOid.toLowerCase(), pr.headRepositoryOwner.login.toLowerCase(),
+    pr.headRefName, pr.baseRefName
+  ])).digest("base64url").slice(0, 22);
+}
+
 export function resolveGithubAction(config, action, dependencies = {}) {
   assertAction(config, action);
   if (action.action === "open")
     return action;
   const execute = dependencies.execute ?? spawnSync;
   const observed = stablePr(config, action.prNumber, execute);
-  const supplied = [action.expectedHeadSha, action.headOwner, action.headBranch, action.baseBranch].some(Boolean);
-  if (supplied) {
+  if (action.proposalIdentityDigest && proposalIdentityDigest(observed) !== action.proposalIdentityDigest)
+    throw new Error("pull request identity changed after the displayed proposal");
+  const fullIdentity = [action.expectedHeadSha, action.headOwner, action.headBranch, action.baseBranch].every(Boolean);
+  if (fullIdentity) {
     assertPrIdentity(observed, action);
     return action;
   }
+  if (action.expectedHeadSha && observed.headRefOid !== action.expectedHeadSha)
+    throw new Error(`pull request head moved after proposal: expected ${action.expectedHeadSha}, observed ${observed.headRefOid}`);
   const resolved = {
     ...action,
     prUrl: observed.url,

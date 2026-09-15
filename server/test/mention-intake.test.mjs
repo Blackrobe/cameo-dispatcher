@@ -40,7 +40,7 @@ test("handles empty, help, and exact control hints without creating task text", 
   assert.equal(defaultMentionAcceptance.length, 7);
 });
 
-test("recognizes bounded natural owner PR instructions but not capability questions", () => {
+test("broad PR language creates only non-executing action candidates", () => {
   for (const [text, action, requestedPrNumber] of [
     ["merge PR 400", "merge", 400],
     ["please merge PR #400", "merge", 400],
@@ -50,16 +50,18 @@ test("recognizes bounded natural owner PR instructions but not capability questi
     ["could you please merge PR 400?", "merge", 400]
   ])
     assert.deepEqual(parseMentionIntake(`<@${botId}> ${text}`, botId), {
-      kind: "github_task_control", action, requestedPrNumber
+      kind: "github_action_candidate", action, requestedPrNumber, objective: text
     });
-  assert.equal(parseMentionIntake(`<@${botId}> are you able to merge PR 400?`, botId).kind, "task");
-  assert.equal(parseMentionIntake(`<@${botId}> explain whether PR 400 can merge`, botId).kind, "task");
   for (const text of [
     "don't merge PR 400", "merge PR 400 after CI finishes", "should we merge PR 400?",
-    "is this PR mergeable?", "merge PR 400 and close PR 401", "merge it", "PR 400 merge",
     "can you merge PR 400?", "Explain how to merge PR 400", "Please explain how to merge PR 400?",
     "I cannot merge PR 400", "Aedis suggested we merge PR 400", "Please review the merge of PR 400",
-    "don’t merge PR 400"
+    "don’t merge PR 400", "try again, merge pr 400", "what are the blockers to merge PR 400",
+    "explain whether PR 400 can merge"
+  ])
+    assert.equal(parseMentionIntake(`<@${botId}> ${text}`, botId).kind, "github_action_candidate", text);
+  for (const text of [
+    "is this PR mergeable?", "merge PR 400 and close PR 401", "merge it"
   ])
     assert.equal(parseMentionIntake(`<@${botId}> ${text}`, botId).kind, "task", text);
 });

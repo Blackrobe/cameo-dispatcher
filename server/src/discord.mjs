@@ -1,5 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   EmbedBuilder,
   GatewayIntentBits,
@@ -10,7 +13,7 @@ import {
 } from "discord.js";
 
 import { AdmissionError } from "./db.mjs";
-import { defaultMentionAcceptance, parseMentionIntake } from "./mention-intake.mjs";
+import { defaultMentionAcceptance, parseGithubActionCandidate, parseMentionIntake } from "./mention-intake.mjs";
 import { chooseRunPolicy, MODELS } from "./run-policy.mjs";
 
 export const commands = [
@@ -238,6 +241,102 @@ function githubActionEmbed(action, title) {
     .setTimestamp(new Date(action.updatedAt));
 }
 
+function githubProposalIdentityDigest(proposal) {
+  return createHash("sha256").update(JSON.stringify([
+    proposal.prNumber, proposal.expectedHeadSha.toLowerCase(), proposal.headOwner.toLowerCase(),
+    proposal.headBranch, proposal.baseBranch
+  ])).digest("base64url").slice(0, 22);
+}
+
+export function githubProposalCustomId(config, proposal) {
+  const identityDigest = githubProposalIdentityDigest(proposal);
+  const payload = `${proposal.action === "merge" ? "m" : "c"}:${proposal.prNumber}:${identityDigest}:${proposal.sourceMessageId}`;
+  const signature = createHmac("sha256", config.runnerToken)
+    .update(`cameo-github-proposal-v1:${payload}`).digest("base64url").slice(0, 16);
+  return `ghp:${payload}:${signature}`;
+}
+
+export function parseGithubProposalCustomId(config, customId) {
+  const match = String(customId ?? "").match(/^ghp:([mc]):(\d{1,7}):([A-Za-z0-9_-]{22}):(\d{5,30}):([A-Za-z0-9_-]{16})$/i);
+  if (!match)
+    return null;
+  const payload = `${match[1]}:${match[2]}:${match[3]}:${match[4]}`;
+  const expected = createHmac("sha256", config.runnerToken)
+    .update(`cameo-github-proposal-v1:${payload}`).digest("base64url").slice(0, 16);
+  const actualBuffer = Buffer.from(match[5]);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer))
+    return null;
+  return {
+    action: match[1] === "m" ? "merge" : "close",
+    prNumber: Number(match[2]),
+    proposalIdentityDigest: match[3],
+    sourceMessageId: match[4]
+  };
+}
+
+export async function fetchGithubProposal(prNumber, fetchImpl = fetch) {
+  const response = await fetchImpl(`https://api.github.com/repos/cameo-mod/Cameo-mod/pulls/${prNumber}`, {
+    headers: { accept: "application/vnd.github+json", "user-agent": "cameo-dispatcher" },
+    signal: AbortSignal.timeout(5000)
+  });
+  if (!response.ok)
+    throw new Error(`GitHub proposal lookup returned ${response.status}`);
+  const pr = await response.json();
+  if (pr.number !== prNumber || pr.html_url !== `https://github.com/cameo-mod/Cameo-mod/pull/${prNumber}`
+    || pr.base?.repo?.full_name !== "cameo-mod/Cameo-mod"
+    || !/^[0-9a-f]{40}$/i.test(pr.head?.sha ?? "") || typeof pr.head?.ref !== "string"
+    || typeof pr.head?.repo?.owner?.login !== "string" || typeof pr.base?.ref !== "string")
+    throw new Error("GitHub proposal lookup returned an invalid PR identity");
+  return {
+    prNumber,
+    prUrl: pr.html_url,
+    state: pr.state,
+    draft: Boolean(pr.draft),
+    expectedHeadSha: pr.head.sha.toLowerCase(),
+    headOwner: pr.head.repo.owner.login,
+    headBranch: pr.head.ref,
+    baseBranch: pr.base.ref
+  };
+}
+
+export function acceptGithubProposal(config, store, actor, proposal) {
+  if (!config.allowedUserIds.has(actor.id))
+    throw new AdmissionError("github_actor_untrusted", "Only a configured trusted developer may authorize this GitHub action.");
+  const action = store.createGithubAction({
+    interactionId: proposal.sourceMessageId,
+    rootJobId: proposal.rootJobId,
+    requestedPrNumber: proposal.prNumber,
+    proposalIdentityDigest: proposal.proposalIdentityDigest,
+    requesterDiscordId: actor.id,
+    requesterName: actor.globalName || actor.username,
+    action: proposal.action,
+    repository: "cameo-mod/Cameo-mod",
+    mergeMethod: "merge",
+    discordThreadId: proposal.discordThreadId
+  });
+  store.cancelProposalFollowup(`discord-followup-${proposal.sourceMessageId}`);
+  return action;
+}
+
+function githubProposalComponents(config, proposal) {
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(githubProposalCustomId(config, proposal))
+      .setLabel(`${proposal.action === "merge" ? "Merge" : "Close"} PR #${proposal.prNumber}`)
+      .setStyle(proposal.action === "merge" ? ButtonStyle.Success : ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`${githubProposalCustomId(config, proposal)}:dismiss`)
+      .setLabel("Dismiss action")
+      .setStyle(ButtonStyle.Secondary)
+  )];
+}
+
+function discordSnowflakeTimestamp(id) {
+  try { return Number((BigInt(id) >> 22n) + 1420070400000n); }
+  catch { return Number.NaN; }
+}
+
 const mentionReplyOptions = Object.freeze({ allowedMentions: { parse: [] } });
 
 async function replyWithoutMentions(message, content) {
@@ -298,7 +397,7 @@ async function provisionMentionJob({ config, store, client, job, claimToken, sou
   return store.setDiscordThread(job.id, thread.id, claimToken);
 }
 
-async function provisionFollowupJob({ store, client, job, claimToken, sourceMessage = null }) {
+async function provisionFollowupJob({ config, store, client, job, claimToken, sourceMessage = null, proposal = null }) {
   const channel = sourceMessage?.channel ?? await client.channels.fetch(job.source.channelId);
   let acknowledgement;
   if (job.discordAcknowledgementId) {
@@ -306,7 +405,11 @@ async function provisionFollowupJob({ store, client, job, claimToken, sourceMess
   } else {
     const original = sourceMessage ?? await channel.messages.fetch(job.source.messageId);
     acknowledgement = await original.reply({
+      content: proposal
+        ? `Possible ${proposal.action} intent detected for PR #${proposal.prNumber}: ${proposal.headOwner}:${proposal.headBranch} → ${proposal.baseBranch} at ${proposal.expectedHeadSha.slice(0, 12)}. Nothing will change on GitHub unless a trusted developer clicks the action button; the ordinary agent analysis continues otherwise.`
+        : undefined,
       embeds: [systemEmbed(job, "Cameo follow-up provisioning")],
+      components: proposal ? githubProposalComponents(config, proposal) : [],
       nonce: job.source.messageId,
       enforceNonce: true,
       ...mentionReplyOptions
@@ -348,7 +451,7 @@ export function createMentionHandler(config, store, client) {
           await replyWithoutMentions(message, `Use /cameo-${parsed.command} job:${parsed.jobId}. Conversational messages never change dispatcher control state.`);
         return;
       }
-      if (parsed.kind === "github_task_control" && !inCandidateThread) {
+      if (parsed.kind === "github_action_candidate" && !inCandidateThread) {
         if (store.allowRateLimitNotice(message.author.id, 10))
           await replyWithoutMentions(message, "Use this trusted-developer control inside the registered task thread whose PR should be changed.");
         return;
@@ -366,21 +469,20 @@ export function createMentionHandler(config, store, client) {
             await replyWithoutMentions(message, "This is not a registered Cameo Dispatcher job thread. Start unrelated work in #agent-office.");
           return;
         }
-        if (parsed.kind === "github_task_control") {
-          const action = store.createGithubAction({
-            interactionId: message.id,
-            rootJobId: root.id,
-            requesterDiscordId: message.author.id,
-            requesterName: message.member?.displayName || message.author.globalName || message.author.username,
-            action: parsed.action,
-            requestedPrNumber: parsed.requestedPrNumber,
-            repository: "cameo-mod/Cameo-mod",
-            mergeMethod: "merge",
-            discordThreadId: message.channelId
-          });
-          if (action.createDisposition === "new")
-            await message.reply({ embeds: [githubActionEmbed(action, "Trusted GitHub control queued")], ...mentionReplyOptions });
-          return;
+        let proposal = null;
+        if (parsed.kind === "github_action_candidate") {
+          const target = store.resolveTaskPrTarget(root.id, parsed.requestedPrNumber);
+          try {
+            const live = await (config.githubProposalFetcher ?? fetchGithubProposal)(target.prNumber);
+            proposal = {
+              action: parsed.action,
+              prNumber: target.prNumber,
+              rootJobId: root.id, sourceMessageId: message.id,
+              ...live
+            };
+          } catch (error) {
+            console.error(`GitHub proposal lookup failed: ${error.message}`);
+          }
         }
 
         let followup = store.createFollowup({
@@ -405,7 +507,7 @@ export function createMentionHandler(config, store, client) {
         if (!store.claimProvisioning(followup.id, followupClaim))
           return;
         try {
-          followup = await provisionFollowupJob({ store, client, job: followup, claimToken: followupClaim, sourceMessage: message });
+          followup = await provisionFollowupJob({ config, store, client, job: followup, claimToken: followupClaim, sourceMessage: message, proposal });
         } catch (error) {
           store.failProvisioning(followup.id, error.message, followupClaim);
           throw error;
@@ -460,8 +562,24 @@ export async function recoverMentionProvisioning(config, store, client) {
       continue;
     try {
       const current = store.get(candidate.id);
-      if (current.source?.kind === "followup")
-        await provisionFollowupJob({ store, client, job: current, claimToken: provisioningClaim });
+      if (current.source?.kind === "followup") {
+        const candidate = parseGithubActionCandidate(current.objective);
+        let proposal = null;
+        if (candidate) {
+          const target = store.resolveTaskPrTarget(current.parentJobId, candidate.requestedPrNumber);
+          try {
+            const live = await (config.githubProposalFetcher ?? fetchGithubProposal)(target.prNumber);
+            proposal = {
+              action: candidate.action, prNumber: target.prNumber,
+              rootJobId: current.parentJobId, sourceMessageId: current.source.messageId,
+              ...live
+            };
+          } catch (error) {
+            console.error(`GitHub proposal recovery lookup failed: ${error.message}`);
+          }
+        }
+        await provisionFollowupJob({ config, store, client, job: current, claimToken: provisioningClaim, proposal });
+      }
       else
         await provisionMentionJob({ config, store, client, job: current, claimToken: provisioningClaim });
     } catch (error) {
@@ -528,7 +646,7 @@ export async function startDiscord(config, store) {
   });
 
   client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand())
+    if (!interaction.isChatInputCommand() && !interaction.isButton())
       return;
 
     const inConfiguredChannel = interaction.channelId === config.channelId
@@ -542,6 +660,40 @@ export async function startDiscord(config, store) {
     }
 
     try {
+      if (interaction.isButton()) {
+        const dismiss = interaction.customId.endsWith(":dismiss");
+        const proposal = parseGithubProposalCustomId(config, dismiss ? interaction.customId.slice(0, -8) : interaction.customId);
+        if (!proposal) {
+          await interaction.reply({ content: "This GitHub proposal is invalid or no longer recognized.", ephemeral: true });
+          return;
+        }
+        const proposalTimestamp = discordSnowflakeTimestamp(proposal.sourceMessageId);
+        if (!Number.isFinite(proposalTimestamp) || Date.now() - proposalTimestamp > 15 * 60 * 1000 || proposalTimestamp - Date.now() > 60 * 1000) {
+          await interaction.reply({ content: "This GitHub proposal expired. Send a new natural request to refresh the PR identity.", ephemeral: true });
+          return;
+        }
+        const root = store.getRootByThreadId(interaction.channelId);
+        if (!root) {
+          await interaction.reply({ content: "This GitHub proposal does not belong to the current registered task thread.", ephemeral: true });
+          return;
+        }
+        if (dismiss) {
+          await interaction.update({ components: [] });
+          await interaction.followUp({ content: "GitHub action dismissed. The ordinary agent analysis remains unchanged.", ephemeral: true });
+          return;
+        }
+        const action = acceptGithubProposal(config, store, interaction.user, {
+          ...proposal, rootJobId: root.id, discordThreadId: interaction.channelId
+        });
+        await interaction.update({ components: [] });
+        await interaction.followUp({
+          content: `${proposal.action === "merge" ? "Merge" : "Close"} control queued for PR #${action.prNumber} as ${action.id}.`,
+          ephemeral: true,
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
       if (["cameo-pause", "cameo-resume"].includes(interaction.commandName)) {
         if (!config.adminUserIds.has(interaction.user.id)) {
           await interaction.reply({ content: "Only a dispatcher owner can change claim availability.", ephemeral: true });
@@ -683,7 +835,9 @@ export async function startDiscord(config, store) {
     } catch (error) {
       const content = error instanceof AdmissionError ? error.message : `Dispatcher error: ${error.message}`;
       const payload = { content, ephemeral: true, allowedMentions: { parse: [] } };
-      if (interaction.deferred || interaction.replied)
+      if (interaction.isButton() && (interaction.deferred || interaction.replied))
+        await interaction.followUp(payload).catch(() => {});
+      else if (interaction.deferred || interaction.replied)
         await interaction.editReply(payload).catch(() => {});
       else
         await interaction.reply(payload).catch(() => {});

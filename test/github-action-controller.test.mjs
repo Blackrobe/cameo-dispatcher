@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 import { executeGithubAction, resolveGithubAction } from "../src/github-action-controller.mjs";
 
@@ -13,6 +14,12 @@ const config = {
 
 function response(stdout, status = 0, stderr = "") {
   return { status, stdout: typeof stdout === "string" ? stdout : JSON.stringify(stdout), stderr };
+}
+
+function proposalDigest(baseBranch = "master") {
+  return createHash("sha256").update(JSON.stringify([
+    400, head, "blackrobe", "feature", baseBranch
+  ])).digest("base64url").slice(0, 22);
 }
 
 test("owner merge readies a draft, pins the head SHA, and never bypasses protection", () => {
@@ -160,4 +167,13 @@ test("task-thread PR control resolves and pins live identity before mutation", (
   assert.equal(resolved.baseBranch, "master");
   assert.equal(calls.length, 2);
   assert.throws(() => executeGithubAction(config, unresolved, { execute }), /durably resolved/);
+  assert.throws(() => resolveGithubAction(config, {
+    ...unresolved, expectedHeadSha: "e".repeat(40)
+  }, { execute }), /head moved after proposal/);
+  assert.equal(resolveGithubAction(config, {
+    ...unresolved, proposalIdentityDigest: proposalDigest()
+  }, { execute }).baseBranch, "master");
+  assert.throws(() => resolveGithubAction(config, {
+    ...unresolved, proposalIdentityDigest: proposalDigest("release")
+  }, { execute }), /identity changed after the displayed proposal/);
 });
