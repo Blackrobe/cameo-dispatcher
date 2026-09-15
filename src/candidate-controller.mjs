@@ -33,7 +33,8 @@ function runGit(worktreePath, args, gitBin = "git") {
 }
 
 export function ensureTemporaryArtifactIgnore(repoRoot, gitBin = "git") {
-  const excludePath = runGit(repoRoot, ["rev-parse", "--git-path", "info/exclude"], gitBin);
+  const reportedPath = runGit(repoRoot, ["rev-parse", "--git-path", "info/exclude"], gitBin);
+  const excludePath = path.isAbsolute(reportedPath) ? reportedPath : path.resolve(repoRoot, reportedPath);
   const current = readFileSync(excludePath, "utf8");
   if (current.split(/\r?\n/).includes(temporaryArtifactPattern))
     return excludePath;
